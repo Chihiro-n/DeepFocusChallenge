@@ -14,6 +14,7 @@
 | EXP009 | Patch-wise FM Distribution (230特徴量) | 9.69 | 20.95 |
 | EXP010 | Contrast-Invariant Features (81特徴量) | 11.31 | 20.32 |
 | EXP011 | FOV-Normalized Features (99特徴量) | 11.76 | 20.27 |
+| EXP012 | Feature Selection (15特徴量) | 10.96 | 20.14 |
 
 ---
 
@@ -409,6 +410,83 @@ FOV（Field of View）によるスケール差がドメインシフトの原因�
 
 | Child Exp | 特徴量数 | CV RMSE | LB Score | 備考 |
 |-----------|----------|---------|----------|------|
-| child-exp000 | ~100 | TBD | TBD | EXP003 + FOV正規化 |
+| child-exp000 | 99 | 11.76 | 20.27 | LB悪化、正規化特徴量よりも生が優先される |
+
+### 結果・知見
+
+1. **CV同等だがLB悪化** - EXP003 (19.16) → 20.27
+2. **Feature Importance**: 正規化特徴量よりも生の特徴量が上位
+   - モデルは自動的に生の特徴量を優先
+   - FOV正規化は意図した効果を発揮せず
+3. **Pattern別RMSE**:
+   - Pattern 1: 13.99（EXP003: 15.36から改善）
+   - Pattern 2: 9.46（FOV=4だが改善せず）
+4. **考察**:
+   - 特徴量増加によるオーバーフィットが支配的
+   - FOV正規化はTrain/Testのドメインシフト解消に不十分
+
+---
+
+## EXP012: Feature Selection from EXP003
+
+### 仮説
+
+EXP003の60特徴量から重要度の高いものだけを選択し、オーバーフィットを軽減。
+55サンプルに対して60特徴量は多すぎる可能性がある。
+
+### 手法
+
+1. EXP003と同じ60特徴量を抽出
+2. EXP003のFeature Importanceに基づき上位N個を選択
+3. 複数のN（10, 15, 20, 25, 30, 40, 50, 60）でCV RMSEを比較
+4. 最適なN（=15）を選択
+
+### 選択された15特徴量
+
+1. `mtf_decay_high_to_vhigh` - MTF減衰率
+2. `jnb_sharp_ratio_t30` - JNBシャープネス比率
+3. `log_var_s5.0` - LoG分散（σ=5）
+4. `img_std` - 画像標準偏差
+5. `fft_low_ratio` - 低周波エネルギー比率
+6. `jnb_sharp_ratio_t10` - JNBシャープネス比率
+7. `log_max_s5.0` - LoG最大値（σ=5）
+8. `grad_skewness` - 勾配歪度
+9. `fft_mid_ratio` - 中周波エネルギー比率
+10. `edge_gradient_p25` - エッジ勾配25パーセンタイル
+11. `jnb_sharp_ratio_t20` - JNBシャープネス比率
+12. `laplacian_var` - ラプラシアン分散
+13. `log_max_s3.0` - LoG最大値（σ=3）
+14. `mtf_low_high_ratio` - 低周波/高周波比
+15. `edge_gradient_mean` - エッジ勾配平均
+
+### 実験
+
+| Child Exp | 特徴量数 | CV RMSE | LB Score | 備考 |
+|-----------|----------|---------|----------|------|
+| child-exp000 | 15 | 10.96 | 20.14 | CV改善だがLB改善せず |
+
+### 結果・知見
+
+1. **CV改善だがLB悪化** - 典型的な方向違い
+   - CV: 11.35 → 10.96（改善）
+   - LB: 19.16 → 20.14（悪化）
+2. **特徴量数別CV RMSE**:
+   - n=10: 11.96
+   - n=15: **10.96**（最良）
+   - n=20: 11.93
+   - n=25: 11.16
+   - n=30: 11.50
+   - n=60: 11.82
+3. **Pattern別RMSE**:
+   - Pattern 0: 12.85
+   - Pattern 1: 13.10
+   - Pattern 2: 8.77
+   - Pattern 3: 12.72
+   - Pattern 4: 4.99（最良）
+4. **考察**:
+   - 特徴量を減らしてもLBは改善しなかった
+   - CV RMSEとLBの相関が低い（CV改善≠LB改善）
+   - EXP003の60特徴量がバランス良く機能している可能性
+   - 問題はオーバーフィットではなく、ドメインシフトの可能性
 
 ---
