@@ -1,0 +1,105 @@
+# Credentials and API Keys
+.env
+kaggle.json
+*.key
+*.pem
+
+# Weights & Biases
+wandb/
+*.wandb
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+venv/
+ENV/
+env/
+.venv
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# Model outputs
+*.pth
+*.pt
+*.ckpt
+*.h5
+*.pkl
+*.pickle
+
+# Data
+input/
+data/
+datasets/
+*.csv
+*.tsv
+*.json
+!.env.template
+!**/config/*.yaml
+!**/config/*.json
+!scripts/*.json
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+.code-workspace
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Output directories
+outputs/
+outputs_*/
+results/
+runs/
+
+# Specific to this project
+EXP/*/outputs/
+EXP/*/outputs_*/
+EXP/**/models/*.pth
+EXP/**/models/*.pkl
+EXP/**/models/oof_*.csv
+EXP/**/models/oof_*.json
+
+
+
+*.ipynb
+execute_train*.ipynb
+
+
+notebooks/EDA
