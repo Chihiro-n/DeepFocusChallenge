@@ -9,9 +9,10 @@
 | EXP002 | Train基準Z-score + Ridge | 17.25 | 19.73 |
 | **EXP003** | **LightGBM + DeepResearch (60特徴量)** | **11.35** | **19.16** ⭐ |
 | EXP004 | EXP002+EXP003融合 (120特徴量) | 11.96 | 19.74 |
-| EXP005 | Monotone Constraints LightGBM | TBD | TBD |
-| EXP007 | Reblur-ratio Features | TBD | TBD |
+| EXP005 | Monotone Constraints LightGBM | 11.72 | 19.84 |
+| EXP007 | Reblur-ratio Features (104特徴量) | 11.36 | 19.75 |
 | EXP009 | Patch-wise FM Distribution | TBD | TBD |
+| EXP010 | Contrast-Invariant Features | TBD | TBD |
 
 ---
 
@@ -218,7 +219,18 @@ EXP003をベースに、物理的に正しい単調制約を追加。
 
 | Child Exp | 特徴量数 | CV RMSE | LB Score | 備考 |
 |-----------|----------|---------|----------|------|
-| child-exp000 | 60 | TBD | TBD | 単調制約追加 |
+| child-exp000 | 60 | 11.72 | 19.84 | 単調制約が強すぎて悪化 |
+
+### 結果・知見
+
+1. **単調制約は逆効果** - EXP003 (19.16) より悪化 (19.84)
+2. **制約が強すぎた**: 45個の特徴量に-1制約 → 表現力低下
+3. **Pattern別RMSE**:
+   - Pattern 1: 13.75（EXP003の15.36から改善）
+   - Pattern 4: 5.88（EXP003の5.32から悪化）
+4. **Feature Importance**: 制約なし(0)の`img_std`がトップ（190）
+   - 制約ありの特徴量より制約なしが使われている
+5. **考察**: 物理的制約は正しい方向だが、全特徴量に厳密に適用するのは過剰
 
 ---
 
@@ -252,7 +264,19 @@ EXP003をベースに、物理的に正しい単調制約を追加。
 
 | Child Exp | 特徴量数 | CV RMSE | LB Score | 備考 |
 |-----------|----------|---------|----------|------|
-| child-exp000 | ~108 | TBD | TBD | DeepResearch + Reblur |
+| child-exp000 | 104 | 11.36 | 19.75 | 特徴量増加でオーバーフィット |
+
+### 結果・知見
+
+1. **CV同等だがLB悪化** - 特徴量増加（60→104）によるオーバーフィット
+2. **Reblur特徴量の重要度は低い**: Top 15に2つのみ
+   - `reblur_ratio_sobel_max_s2.0` (52)
+   - `reblur_ratio_laplacian_var_s2.0` (42)
+3. **既存特徴量が依然として支配的**: `jnb_sharp_ratio_t30` (108)がトップ
+4. **Pattern別RMSE**:
+   - Pattern 1: 14.69（EXP003の15.36から改善）
+   - Pattern 4: 5.27（EXP003と同等）
+5. **考察**: Reblurアプローチは補助的な情報を提供するが、主役にはなれない
 
 ---
 
@@ -295,5 +319,35 @@ Pattern1（明暗パターン）問題:
 | Child Exp | 特徴量数 | CV RMSE | LB Score | 備考 |
 |-----------|----------|---------|----------|------|
 | child-exp000 | ~230 | TBD | TBD | DeepResearch + Patch |
+
+---
+
+## EXP010: Contrast-Invariant Features
+
+### 仮説
+
+Gemini DeepResearchの調査結果に基づき、「コントラスト不変」の特徴量を追加。
+Pattern 1問題の根本原因が「コントラスト/輝度依存性」である可能性に対処。
+
+### 追加特徴量
+
+| カテゴリ | 特徴量 | 特性 |
+|---------|--------|------|
+| Spectral Kurtosis | `spectral_kurtosis`, `spectral_skewness`, etc. | コントラスト不変（無次元量） |
+| Autocorrelation | `autocorr_h`, `autocorr_v`, `autocorr_total_norm` | ノイズ耐性、Vollahの方法 |
+| LBP | `lbp_entropy`, `lbp_uniformity`, `lbp_non_uniform_ratio` | 照明不変（大小関係のみ依存） |
+| Normalized Variance | `normalized_variance`, `cv` | 輝度変動補正 |
+
+### 期待効果
+
+- **コントラスト不変性**: 画像の明るさ・コントラストが変わっても安定
+- **Pattern 1対策**: 輝度依存の特徴量が効かないPattern 1を攻略
+- **ノイズ耐性**: Autocorrelationによる安定した測定
+
+### 実験
+
+| Child Exp | 特徴量数 | CV RMSE | LB Score | 備考 |
+|-----------|----------|---------|----------|------|
+| child-exp000 | ~80 | TBD | TBD | EXP003 + コントラスト不変 |
 
 ---
