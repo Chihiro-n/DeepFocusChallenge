@@ -1,5 +1,20 @@
 # Experiment Summary
 
+## 全体サマリー
+
+| EXP | アプローチ | CV RMSE | LB Score |
+|-----|-----------|---------|----------|
+| EXP000 | Ridge (3特徴量) | 20.46 | 30.05 |
+| EXP001 | LightGBM (33特徴量) | 11.55 | 23.65 |
+| EXP002 | Train基準Z-score + Ridge | 17.25 | 19.73 |
+| **EXP003** | **LightGBM + DeepResearch (60特徴量)** | **11.35** | **19.16** ⭐ |
+| EXP004 | EXP002+EXP003融合 (120特徴量) | 11.96 | 19.74 |
+| EXP005 | Monotone Constraints LightGBM | TBD | TBD |
+| EXP007 | Reblur-ratio Features | TBD | TBD |
+| EXP009 | Patch-wise FM Distribution | TBD | TBD |
+
+---
+
 ## EXP000: ボケ特徴量による defocus 推定
 
 ### 仮説（初期）
@@ -164,10 +179,121 @@ EXP002とEXP003の融合により、さらなる精度向上を狙う:
 
 | Child Exp | 特徴量数 | CV RMSE | LB Score | 備考 |
 |-----------|----------|---------|----------|------|
-| child-exp000 | 120 | - | - | 初回実験 |
+| child-exp000 | 120 | 11.96 | 19.74 | EXP003より悪化 |
 
 ### 結果・知見
 
-（実験実行後に記載）
+1. **融合は逆効果** - EXP003 (19.16) より悪化 (19.74)
+2. **CV RMSEも悪化** - 11.35 → 11.96
+3. **考察**:
+   - Train条件が限定的（`2_1.5_10Pa`, `2_1.5_5Pa`のみ）
+   - Test/Sampleの条件と異なるため、Z-score化がノイズになった可能性
+   - EXP002では効果的だったが、DeepResearch特徴量との組み合わせでは機能せず
+4. **Feature Importance**: EXP003と同様にJNB系が上位だが、Z-score特徴量は上位に入らず
+
+---
+
+## EXP005: Monotone Constraints LightGBM
+
+### 仮説
+
+EXP003をベースに、物理的に正しい単調制約を追加。
+「ボケが強いほど単調に特徴量が変化する」という物理法則を制約として入れる。
+
+### 手法
+
+1. EXP003と同じDeepResearch特徴量（60個）を使用
+2. 各特徴量に単調制約を設定:
+   - **-1 (シャープ指標)**: `laplacian_var`, `sobel_*`, `tenengrad_*`, `local_contrast_*`, `jnb_*` など
+   - **+1 (ボケ指標)**: `fft_low_ratio`, `mtf_decay_*`, `esf_width_*` など
+   - **0 (制約なし)**: `img_mean`, `img_std`, `grad_entropy` など
+3. LightGBMの `monotone_constraints` パラメータで制約を適用
+
+### 期待効果
+
+- 物理的に不整合な予測を抑制
+- オーバーフィット防止による汎化性能向上
+
+### 実験
+
+| Child Exp | 特徴量数 | CV RMSE | LB Score | 備考 |
+|-----------|----------|---------|----------|------|
+| child-exp000 | 60 | TBD | TBD | 単調制約追加 |
+
+---
+
+## EXP007: Reblur-ratio Features
+
+### 仮説
+
+追加ぼかしを適用して、元画像との特徴量差分を計算する。
+既にボケている画像は追加ぼかしを加えても変化が少ない。
+
+原理:
+- **シャープな画像**: ぼかすと特徴量が大きく変化
+- **ボケた画像**: 追加ぼかしでも変化が少ない（既に低周波成分のみ）
+
+### 手法
+
+1. 元画像から特徴量抽出 (F_orig)
+2. Gaussianぼかしを適用（σ = 2.0, 3.0, 5.0）
+3. ぼかし画像から特徴量抽出 (F_blur)
+4. 差分・比率を計算:
+   - `diff = F_orig - F_blur` (シャープな画像ほど大きい)
+   - `ratio = F_blur / F_orig` (ボケた画像ほど1に近い)
+5. DeepResearch特徴量 + Reblur特徴量でLightGBM
+
+### 期待効果
+
+- ドメイン不変: 装置条件に依存しない相対的な指標
+- Pattern1問題への対処: 輝度ベースではなく変化量ベース
+
+### 実験
+
+| Child Exp | 特徴量数 | CV RMSE | LB Score | 備考 |
+|-----------|----------|---------|----------|------|
+| child-exp000 | ~108 | TBD | TBD | DeepResearch + Reblur |
+
+---
+
+## EXP009: Patch-wise Focus Measure Distribution
+
+### 仮説
+
+画像をパッチに分割し、パッチごとのフォーカス指標の分布を特徴量化。
+全体統計量だけでは局所的な品質差が消されてしまう問題に対処。
+
+Pattern1（明暗パターン）問題:
+- 明部と暗部でフォーカス品質が異なる可能性
+- 全体平均だと局所的なばらつきが消える
+- パッチ単位の分布を見ることで不均一性を検出
+
+### 手法
+
+1. 画像を複数サイズのパッチに分割（32x32, 64x64, 128x128）
+2. 各パッチのフォーカス指標を計算:
+   - Laplacian variance
+   - Sobel mean
+   - Tenengrad
+   - Local contrast
+   - Gradient energy
+3. パッチ間の分布統計量を計算:
+   - mean, std, min, max, range
+   - skew, kurtosis, CV
+   - p10, p90, IQR
+4. 4分割（象限）のFM値と差分も追加
+5. DeepResearch特徴量 + パッチ特徴量でLightGBM
+
+### 期待効果
+
+- 局所的なフォーカス不均一を検出
+- Pattern1のような特殊パターンへの対応
+- 空間的な情報の活用
+
+### 実験
+
+| Child Exp | 特徴量数 | CV RMSE | LB Score | 備考 |
+|-----------|----------|---------|----------|------|
+| child-exp000 | ~230 | TBD | TBD | DeepResearch + Patch |
 
 ---
