@@ -1,0 +1,19 @@
+# EXP000 child-exp000
+# Depth Anything v3 による defocus 推定
+
+# データパス
+data_dir: "/content/drive/MyDrive/python/kaggle/DeepFocusChallenge/input/DeepFocusChallenge_v2"
+output_dir: "/content/drive/MyDrive/python/kaggle/DeepFocusChallenge/EXP/EXP000/output/child-exp000"
+
+# モデル設定
+model_name: "depth-anything/DA3NESTED-GIANT-LARGE"
+input_size: 518
+
+# 特徴量
+feature_cols:
+  - depth_std
+  - depth_range
+  - depth_iqr
+
+# 回帰設定
+ridge_alpha: 1.0
