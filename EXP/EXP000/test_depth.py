@@ -36,8 +36,9 @@ def load_depth_model(model_name: str = "depth-anything/DA3NESTED-GIANT-LARGE"):
 def inference_single(model, image_path: str, input_size: int = 518) -> np.ndarray:
     """単一画像の推論（TTA なし、シンプル版）"""
     with torch.no_grad():
+        # image はリストで渡す必要がある
         prediction = model.inference(
-            image=image_path,
+            image=[image_path],
             process_res=input_size,
             process_res_method="upper_bound_resize",
             export_dir=None,
