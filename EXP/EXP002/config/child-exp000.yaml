@@ -1,0 +1,13 @@
+# EXP002 child-exp000
+# Train画像を基準としたdefocus推定
+
+# Train画像（focus=0）を基準として、
+# Test画像の特徴量がどれだけ基準から離れているかで推定
+
+# 回帰設定
+ridge_alpha: 1.0
+
+# 使用する特徴量タイプ
+use_zscore: true      # 基準からのZ-score
+use_diff: true        # 基準からの差分
+use_raw: true         # 元特徴量

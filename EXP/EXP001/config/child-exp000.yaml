@@ -1,0 +1,21 @@
+# EXP001 child-exp000
+# LightGBM による defocus 推定
+
+# LightGBM パラメータ
+lgb_params:
+  objective: regression
+  metric: rmse
+  boosting_type: gbdt
+  num_leaves: 15
+  max_depth: 4
+  learning_rate: 0.05
+  feature_fraction: 0.8
+  bagging_fraction: 0.8
+  bagging_freq: 5
+  min_child_samples: 3
+  lambda_l1: 0.1
+  lambda_l2: 0.1
+  seed: 42
+
+num_boost_round: 300
+early_stopping_rounds: 50

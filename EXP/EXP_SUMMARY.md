@@ -1,32 +1,84 @@
 # Experiment Summary
 
-## EXP000: Depth Anything v3 による defocus 推定
+## EXP000: ボケ特徴量による defocus 推定
 
-### 仮説
+### 仮説（初期）
 
-SEM画像は半導体の凹凸を撮影している。ボケている画像は不鮮明になり、凹凸が小さく見える。
+Depth Anything v3 で depth map を生成し、凹凸の大きさから推定する。
+→ **棄却**: SEM画像では期待通りに動作せず、逆の相関を示した。
 
-- ボケていない画像 → 凹凸が鮮明 → depth map の分散が大きい
-- ボケている画像 → 凹凸が不鮮明 → depth map の分散が小さい
+### 方針転換
 
-この関係を利用し、Depth Anything v3 で depth map を生成し、その統計量（std, range, iqr）から abs_focus を推定する。
+画像処理ベースのボケ検出特徴量を使用:
+- Laplacian分散
+- FFT周波数成分
+- Sobel/Scharr勾配
+- 局所コントラスト
 
-### 手法
+### 重要な発見
 
-1. Depth Anything v3 (DA3NESTED-GIANT-LARGE) で各画像の depth map を生成
-2. 4方向TTA（0°, 90°, 180°, 270°）で推論し平均
-3. Depth map から特徴量を抽出:
-   - `depth_std`: 標準偏差
-   - `depth_range`: max - min
-   - `depth_iqr`: 四分位範囲
-4. Sample データ（55枚、ラベル付き）で Ridge 回帰を学習
-5. Test データに適用して予測
+1. **全体相関とパターン内相関は異なる**
+   - `img_mean`: 全体相関0.79だがPattern1では相関なし → 使えない
+   - `local_contrast_std`: 全Pattern一貫して負の相関 → 信頼できる
+
+2. **有効な特徴量**（パターン内で一貫した負の相関）:
+   - `local_contrast_std` (r = -0.94〜-0.99)
+   - `fft_mid_ratio` (r = -0.88〜-0.99)
+   - `sobel_max` (r = -0.78〜-0.96)
 
 ### 実験
 
-| Child Exp | 特徴量 | Ridge Alpha | Sample RMSE | LB Score | 備考 |
-|-----------|--------|-------------|-------------|----------|------|
-| child-exp000 | std, range, iqr | 1.0 | - | - | 初回実験 |
+| Child Exp | 特徴量 | モデル | Sample RMSE | LB Score | 備考 |
+|-----------|--------|--------|-------------|----------|------|
+| child-exp000 | local_contrast_std, fft_mid_ratio, sobel_max | Ridge | 20.46 | **30.05** | **1st place** |
+
+---
+
+## EXP001: LightGBM による非線形モデル
+
+### 仮説
+
+Ridge回帰（線形）では捉えられない非線形関係をLightGBMで学習する。
+特徴量も拡張（複数カーネルサイズ、複数周波数帯域など）。
+
+### 手法
+
+1. 拡張特徴量抽出（40+特徴量）
+2. LightGBMで5-fold CV
+3. 全データで再学習してTest予測
+
+### 実験
+
+| Child Exp | 特徴量数 | CV RMSE | LB Score | 備考 |
+|-----------|----------|---------|----------|------|
+| child-exp000 | 40+ | - | - | 初回実験 |
+
+### 結果・知見
+
+（実験実行後に記載）
+
+---
+
+## EXP002: Train画像を基準としたdefocus推定
+
+### 仮説
+
+Train画像（2220枚）は主にabs_focus=0（ベストフォーカス）。
+これを「フォーカスが合っている状態」の基準として使用し、
+Test画像の特徴量が基準からどれだけ離れているかでdefocusを推定する。
+
+### 手法
+
+1. Train画像の特徴量分布を計算（mean, std）
+2. Sample/Test画像の特徴量を基準との差分（Z-score, diff）に変換
+3. Sample画像で差分特徴量とabs_focusの関係を学習
+4. Test画像に適用
+
+### 実験
+
+| Child Exp | 基準 | モデル | Sample RMSE | LB Score | 備考 |
+|-----------|------|--------|-------------|----------|------|
+| child-exp000 | Train全体 | Ridge | - | - | 初回実験 |
 
 ### 結果・知見
 
