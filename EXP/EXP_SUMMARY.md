@@ -51,7 +51,7 @@ Ridge回帰（線形）では捉えられない非線形関係をLightGBMで学�
 
 | Child Exp | 特徴量数 | CV RMSE | LB Score | 備考 |
 |-----------|----------|---------|----------|------|
-| child-exp000 | 33 | 11.55 | **23.65** | **1st place**, EXP000から6.4pt改善 |
+| child-exp000 | 33 | 11.55 | 23.65 | EXP000から6.4pt改善 |
 
 ### 結果・知見
 
@@ -86,11 +86,22 @@ Test画像の特徴量が基準からどれだけ離れているかでdefocusを
 
 | Child Exp | 基準 | モデル | Sample RMSE | LB Score | 備考 |
 |-----------|------|--------|-------------|----------|------|
-| child-exp000 | Train全体 | Ridge | - | - | 初回実験 |
+| child-exp000 | Train全体 | Ridge | 17.25 | 19.73 | EXP001から3.9pt改善 |
 
 ### 結果・知見
 
-（実験実行後に記載）
+1. **Train基準のZ-score化が有効** - Sample RMSE 17.25 → LB 19.73（差が小さい＝汎化性能が高い）
+2. **Feature coefficients**:
+   - `scharr_std`: +20.2（正の寄与、想定外）
+   - `sobel_max_zscore`: -12.4（Z-score化が効いている）
+   - `local_contrast_std_k7`: -5.6
+3. **Pattern別RMSE**:
+   - Pattern 4: 9.97（最良）
+   - Pattern 1: 23.83（依然として最悪）
+4. **条件の違い**:
+   - Train: `2_1.5_10Pa`, `2_1.5_5Pa` のみ
+   - Test: より多様な条件（`2_2.0_10Pa`, `2_2.0_High`等）
+   - Train基準でも未知条件に対応できている
 
 ---
 
@@ -117,7 +128,43 @@ EXP001をベースに、ChatGPT DeepResearchで調査したゼロショットボ
 
 | Child Exp | 特徴量数 | CV RMSE | LB Score | 備考 |
 |-----------|----------|---------|----------|------|
-| child-exp000 | ~60 | - | - | 初回実験 |
+| child-exp000 | 60 | 11.35 | **19.16** | **1st place**, DeepResearch特徴量が効果的 |
+
+### 結果・知見
+
+1. **DeepResearch特徴量が上位を占める**:
+   - `mtf_decay_high_to_vhigh` (101) - MTF減衰率
+   - `jnb_sharp_ratio_t30` (100) - JNBシャープネス
+   - `log_var_s5.0` (78) - Multi-scale LoG
+2. **Pattern別RMSE**:
+   - Pattern 4: 5.32（最良、大幅改善）
+   - Pattern 1: 15.36（依然最悪だが改善）
+3. **EXP001との比較**:
+   - 同じLightGBMでCV RMSEは同程度(11.35 vs 11.55)
+   - LBは大幅改善(19.16 vs 23.65) → DeepResearch特徴量の汎化性能が高い
+
+---
+
+## EXP004: Train基準Z-score + DeepResearch + LightGBM
+
+### 仮説
+
+EXP002とEXP003の融合により、さらなる精度向上を狙う:
+- EXP002: Train基準Z-score化 → 条件変動にロバスト
+- EXP003: DeepResearch特徴量 → 物理的に意味のある特徴量
+
+### 手法
+
+1. Train画像(2220枚)の特徴量分布を計算
+2. DeepResearch特徴量（60個）を抽出
+3. 各特徴量をTrain基準でZ-score化
+4. 元特徴量 + Z-score特徴量（120個）でLightGBM
+
+### 実験
+
+| Child Exp | 特徴量数 | CV RMSE | LB Score | 備考 |
+|-----------|----------|---------|----------|------|
+| child-exp000 | 120 | - | - | 初回実験 |
 
 ### 結果・知見
 
