@@ -13,7 +13,7 @@
 | EXP007 | Reblur-ratio Features (104特徴量) | 11.36 | 19.75 |
 | EXP009 | Patch-wise FM Distribution (230特徴量) | 9.69 | 20.95 |
 | EXP010 | Contrast-Invariant Features (81特徴量) | 11.31 | 20.32 |
-| EXP011 | FOV-Normalized Features | TBD | TBD |
+| EXP011 | FOV-Normalized Features (99特徴量) | 11.76 | 20.27 |
 
 ---
 
