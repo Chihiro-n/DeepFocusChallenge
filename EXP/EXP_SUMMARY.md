@@ -11,8 +11,9 @@
 | EXP004 | EXP002+EXP003融合 (120特徴量) | 11.96 | 19.74 |
 | EXP005 | Monotone Constraints LightGBM | 11.72 | 19.84 |
 | EXP007 | Reblur-ratio Features (104特徴量) | 11.36 | 19.75 |
-| EXP009 | Patch-wise FM Distribution | TBD | TBD |
-| EXP010 | Contrast-Invariant Features | TBD | TBD |
+| EXP009 | Patch-wise FM Distribution (230特徴量) | 9.69 | 20.95 |
+| EXP010 | Contrast-Invariant Features (81特徴量) | 11.31 | 20.32 |
+| EXP011 | FOV-Normalized Features | TBD | TBD |
 
 ---
 
@@ -318,7 +319,21 @@ Pattern1（明暗パターン）問題:
 
 | Child Exp | 特徴量数 | CV RMSE | LB Score | 備考 |
 |-----------|----------|---------|----------|------|
-| child-exp000 | ~230 | TBD | TBD | DeepResearch + Patch |
+| child-exp000 | 230 | 9.69 | 20.95 | CV改善だがLB悪化（オーバーフィット） |
+
+### 結果・知見
+
+1. **CV大幅改善だがLB悪化** - 典型的なオーバーフィット
+   - CV: 11.35 → 9.69（改善）
+   - LB: 19.16 → 20.95（悪化）
+2. **Pattern 1は改善**: 15.36 → 12.51
+3. **Feature Importance**:
+   - `quad_ud_diff` (121) が圧倒的トップ → Sample特有の特徴を学習
+   - パッチ特徴量が上位を占める
+4. **考察**:
+   - 230特徴量は多すぎる
+   - パッチ分割アプローチは方向性は正しいが、汎化性能が低い
+   - Sampleの55枚に対して特徴量が過剰
 
 ---
 
@@ -348,6 +363,52 @@ Pattern 1問題の根本原因が「コントラスト/輝度依存性」であ�
 
 | Child Exp | 特徴量数 | CV RMSE | LB Score | 備考 |
 |-----------|----------|---------|----------|------|
-| child-exp000 | ~80 | TBD | TBD | EXP003 + コントラスト不変 |
+| child-exp000 | 81 | 11.31 | 20.32 | LB悪化、新特徴量は補助的 |
+
+### 結果・知見
+
+1. **CV同等だがLB悪化** - 特徴量増加による影響
+2. **新規特徴量の重要度**: `lbp_mean` (50), `autocorr_v` (44) がTop 15入り
+3. **既存特徴量が依然支配的**: `jnb_sharp_ratio_t30` (100) がトップ
+4. **Pattern 1**: 13.88（EXP003: 15.36から改善）
+
+---
+
+## EXP011: FOV-Normalized Features
+
+### 仮説
+
+FOV（Field of View）によるスケール差がドメインシフトの原因である可能性。
+
+**問題:**
+- Train: FOV=2 のみ
+- Sample: FOV=2, 4（Pattern 2はFOV=4）
+- Test: FOV=2, 3, 4（多様）
+
+**影響:**
+- FOV 2um: 1ピクセル = 2/1024 um
+- FOV 4um: 1ピクセル = 4/1024 um（2倍粗い）
+- 同じ物理的エッジでもFOV 4の画像はSobel値が半分になる
+
+### 手法
+
+1. `pixel_size = FOV / ImageSize` を計算
+2. `scale_factor = pixel_size / base_pixel_size`（FOV=2を基準）
+3. 勾配系特徴量を `scale_factor` で正規化:
+   - 一階微分（Sobel等）: `feature * scale_factor`
+   - 二階微分（Laplacian等）: `feature * scale_factor^2`
+4. 生の特徴量 + 正規化特徴量の両方を使用
+
+### 期待効果
+
+- FOVに依存しない物理単位での特徴量
+- Train/Test間のドメインギャップを解消
+- 特にPattern 2（FOV=4）の精度向上
+
+### 実験
+
+| Child Exp | 特徴量数 | CV RMSE | LB Score | 備考 |
+|-----------|----------|---------|----------|------|
+| child-exp000 | ~100 | TBD | TBD | EXP003 + FOV正規化 |
 
 ---
