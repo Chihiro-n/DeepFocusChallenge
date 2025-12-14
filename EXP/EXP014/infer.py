@@ -1,11 +1,10 @@
 """
-EXP014: Ridge + GroupKFold (Discussion改善版)
+EXP014: EXP003 + Discussion改善点
 
-Discussionからの改善点:
-- GroupKFold: patternでグループ分割（過学習検知）
-- シンプルなモデル: Ridge回帰（過学習対策）
-- 周波数帯域のstd追加
-- Full trainでLB確認
+EXP003をベースに、Discussionから有効そうな改善点を追加:
+- 周波数帯域のstd（EXP003はmeanのみ）
+- 局所コントラスト kernel=32（EXP003は3,5,7,11）
+- GroupKFoldでの過学習検知（参考用）
 
 使用方法:
 ```
@@ -16,12 +15,10 @@ python EXP/EXP014/infer.py
 import numpy as np
 import pandas as pd
 import cv2
+import lightgbm as lgb
 from pathlib import Path
 from tqdm import tqdm
-from sklearn.model_selection import GroupKFold, KFold
-from sklearn.linear_model import Ridge, Lasso, ElasticNet
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
+from sklearn.model_selection import KFold, GroupKFold
 import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings('ignore')
@@ -36,11 +33,11 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ============================================
-# 特徴量抽出 (Discussion版 + EXP003の良い部分)
+# 特徴量抽出 (EXP003 + Discussion追加分)
 # ============================================
 
 def extract_blur_features(image_path: str) -> dict:
-    """画像からボケ検出用の特徴量を抽出"""
+    """画像からボケ検出用の特徴量を抽出（EXP003 + Discussion改善版）"""
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise ValueError(f"Cannot read image: {image_path}")
@@ -50,15 +47,16 @@ def extract_blur_features(image_path: str) -> dict:
     features = {}
 
     # ============================================
-    # 1. ラプラシアン（シャープネス）
+    # EXP003 からの基本特徴量
     # ============================================
+
+    # 1. Laplacian
     laplacian = cv2.Laplacian(img, cv2.CV_64F)
     features['laplacian_var'] = float(laplacian.var())
-    features['laplacian_mean_abs'] = float(np.mean(np.abs(laplacian)))
+    features['laplacian_std'] = float(laplacian.std())
+    features['laplacian_mean_abs'] = float(np.abs(laplacian).mean())
 
-    # ============================================
-    # 2. FFT 周波数帯域別パワー（Discussion版：mean + std）
-    # ============================================
+    # 2. FFT
     f = np.fft.fft2(img_float)
     fshift = np.fft.fftshift(f)
     magnitude = np.abs(fshift)
@@ -67,7 +65,20 @@ def extract_blur_features(image_path: str) -> dict:
     y, x = np.ogrid[:rows, :cols]
     dist_from_center = np.sqrt((x - ccol) ** 2 + (y - crow) ** 2)
 
-    # Discussion版と同じ5帯域（放射状）
+    max_dist = np.sqrt(crow ** 2 + ccol ** 2)
+    total_energy = np.sum(magnitude ** 2)
+
+    # EXP003の周波数帯域（比率ベース）
+    for low_r, high_r, name in [(0, 0.1, 'low'), (0.1, 0.3, 'mid'), (0.3, 0.5, 'high'), (0.5, 1.0, 'vhigh')]:
+        low_thresh = max_dist * low_r
+        high_thresh = max_dist * high_r
+        mask = (dist_from_center > low_thresh) & (dist_from_center <= high_thresh)
+        energy = np.sum((magnitude * mask) ** 2)
+        features[f'fft_{name}_ratio'] = float(energy / total_energy) if total_energy > 0 else 0
+
+    # ============================================
+    # Discussion追加: 周波数帯域のstd
+    # ============================================
     bands = [(0, 50), (50, 100), (100, 200), (200, 300), (300, 512)]
     for r_inner, r_outer in bands:
         mask = (dist_from_center >= r_inner) & (dist_from_center < r_outer)
@@ -75,49 +86,146 @@ def extract_blur_features(image_path: str) -> dict:
         features[f'fft_band_{r_inner}_{r_outer}_mean'] = float(np.mean(band_values))
         features[f'fft_band_{r_inner}_{r_outer}_std'] = float(np.std(band_values))
 
-    # 高周波/低周波比（Discussion版）
-    high_freq = magnitude[dist_from_center > 200].mean()
-    low_freq = magnitude[dist_from_center <= 50].mean()
-    features['high_low_freq_ratio'] = float(high_freq / (low_freq + 1e-6))
-
-    # ============================================
-    # 3. エッジ勾配統計（Sobel）
-    # ============================================
+    # 3. Sobel
     sobel_x = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=3)
     sobel_y = cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=3)
-    grad_mag = np.sqrt(sobel_x ** 2 + sobel_y ** 2)
+    sobel_mag = np.sqrt(sobel_x ** 2 + sobel_y ** 2)
 
-    features['sobel_mean'] = float(np.mean(grad_mag))
-    features['sobel_std'] = float(np.std(grad_mag))
-    features['sobel_p95'] = float(np.percentile(grad_mag, 95))
+    features['sobel_mean'] = float(sobel_mag.mean())
+    features['sobel_std'] = float(sobel_mag.std())
+    features['sobel_max'] = float(sobel_mag.max())
+    features['sobel_p95'] = float(np.percentile(sobel_mag, 95))
+    features['sobel_p99'] = float(np.percentile(sobel_mag, 99))
+
+    # 4. Scharr
+    scharr_x = cv2.Scharr(img, cv2.CV_64F, 1, 0)
+    scharr_y = cv2.Scharr(img, cv2.CV_64F, 0, 1)
+    scharr_mag = np.sqrt(scharr_x ** 2 + scharr_y ** 2)
+
+    features['scharr_mean'] = float(scharr_mag.mean())
+    features['scharr_std'] = float(scharr_mag.std())
+
+    # 5. Canny
+    for thresh_low, thresh_high in [(50, 150), (100, 200), (30, 100)]:
+        edges = cv2.Canny(img, thresh_low, thresh_high)
+        features[f'canny_density_{thresh_low}_{thresh_high}'] = float(edges.mean() / 255)
+
+    # 6. Local contrast（EXP003: 複数カーネルサイズ）
+    for kernel_size in [3, 5, 7, 11]:
+        local_mean = cv2.blur(img_float, (kernel_size, kernel_size))
+        local_sq_mean = cv2.blur(img_float ** 2, (kernel_size, kernel_size))
+        local_std = np.sqrt(np.maximum(local_sq_mean - local_mean ** 2, 0))
+
+        features[f'local_contrast_mean_k{kernel_size}'] = float(local_std.mean())
+        features[f'local_contrast_std_k{kernel_size}'] = float(local_std.std())
 
     # ============================================
-    # 4. 局所コントラスト（Discussion版：kernel=32）
+    # Discussion追加: 局所コントラスト kernel=32
     # ============================================
     kernel_size = 32
-    local_sq_mean = cv2.blur(img_float ** 2, (kernel_size, kernel_size))
     local_mean = cv2.blur(img_float, (kernel_size, kernel_size))
+    local_sq_mean = cv2.blur(img_float ** 2, (kernel_size, kernel_size))
     local_std = np.sqrt(np.maximum(local_sq_mean - local_mean ** 2, 0))
-    features['local_contrast_mean'] = float(np.mean(local_std))
+    features['local_contrast_mean_k32'] = float(local_std.mean())
+    features['local_contrast_std_k32'] = float(local_std.std())
+
+    # 7. 画像統計量
+    features['img_mean'] = float(img.mean())
+    features['img_std'] = float(img.std())
+    features['img_p5'] = float(np.percentile(img, 5))
+    features['img_p95'] = float(np.percentile(img, 95))
+
+    # 8. 隣接ピクセル差分
+    diff_h = np.abs(img_float[:, 1:] - img_float[:, :-1])
+    diff_v = np.abs(img_float[1:, :] - img_float[:-1, :])
+    features['neighbor_diff_h_mean'] = float(diff_h.mean())
+    features['neighbor_diff_v_mean'] = float(diff_v.mean())
+    features['neighbor_diff_h_std'] = float(diff_h.std())
+    features['neighbor_diff_v_std'] = float(diff_v.std())
 
     # ============================================
-    # 5. EXP003からの追加特徴量（効果的なもの）
+    # DeepResearch からの追加特徴量 (EXP003)
     # ============================================
 
-    # Multi-scale LoG
-    for sigma in [1.0, 2.0, 3.0]:
+    # 9. Multi-scale LoG (Laplacian of Gaussian)
+    for sigma in [1.0, 2.0, 3.0, 5.0]:
         blurred = cv2.GaussianBlur(img_float, (0, 0), sigma)
         log = cv2.Laplacian(blurred, cv2.CV_64F)
         features[f'log_var_s{sigma}'] = float(log.var())
+        features[f'log_max_s{sigma}'] = float(np.abs(log).max())
 
-    # Tenengrad
+    # 10. Tenengrad
     tenengrad = sobel_x ** 2 + sobel_y ** 2
     features['tenengrad_mean'] = float(tenengrad.mean())
+    features['tenengrad_sum'] = float(tenengrad.sum()) / (rows * cols)
 
-    # Power spectrum slope
-    max_dist = min(crow, ccol)
+    # 11. CPBD-like (JNB concept)
+    edges = cv2.Canny(img, 50, 150)
+    edge_points = np.where(edges > 0)
+
+    if len(edge_points[0]) > 100:
+        edge_gradients = sobel_mag[edge_points]
+        features['edge_gradient_mean'] = float(edge_gradients.mean())
+        features['edge_gradient_std'] = float(edge_gradients.std())
+        features['edge_gradient_p25'] = float(np.percentile(edge_gradients, 25))
+        features['edge_gradient_p75'] = float(np.percentile(edge_gradients, 75))
+
+        for thresh in [10, 20, 30, 50]:
+            sharp_ratio = np.sum(edge_gradients > thresh) / len(edge_gradients)
+            features[f'jnb_sharp_ratio_t{thresh}'] = float(sharp_ratio)
+    else:
+        features['edge_gradient_mean'] = 0.0
+        features['edge_gradient_std'] = 0.0
+        features['edge_gradient_p25'] = 0.0
+        features['edge_gradient_p75'] = 0.0
+        for thresh in [10, 20, 30, 50]:
+            features[f'jnb_sharp_ratio_t{thresh}'] = 0.0
+
+    # 12. Edge Spread Function width
+    sobel_binary = (sobel_mag > sobel_mag.mean()).astype(np.uint8)
+    h_widths = []
+    for row in range(0, rows, 10):
+        line = sobel_binary[row, :]
+        changes = np.diff(np.concatenate([[0], line, [0]]))
+        starts = np.where(changes == 1)[0]
+        ends = np.where(changes == -1)[0]
+        if len(starts) > 0 and len(ends) > 0:
+            widths = ends - starts
+            h_widths.extend(widths)
+
+    if h_widths:
+        features['esf_width_h_mean'] = float(np.mean(h_widths))
+        features['esf_width_h_std'] = float(np.std(h_widths))
+    else:
+        features['esf_width_h_mean'] = 0.0
+        features['esf_width_h_std'] = 0.0
+
+    # 13. MTF-like frequency decay
+    if total_energy > 0:
+        features['mtf_decay_mid_to_high'] = float(features['fft_mid_ratio'] / (features['fft_high_ratio'] + 1e-8))
+        features['mtf_decay_high_to_vhigh'] = float(features['fft_high_ratio'] / (features['fft_vhigh_ratio'] + 1e-8))
+        features['mtf_low_high_ratio'] = float(features['fft_low_ratio'] / (features['fft_high_ratio'] + 1e-8))
+
+    # 14. Gradient histogram features
+    grad_hist, _ = np.histogram(sobel_mag.flatten(), bins=20, range=(0, sobel_mag.max() + 1))
+    grad_hist = grad_hist / (grad_hist.sum() + 1e-8)
+
+    grad_hist_nonzero = grad_hist[grad_hist > 0]
+    features['grad_entropy'] = float(-np.sum(grad_hist_nonzero * np.log(grad_hist_nonzero + 1e-10)))
+
+    grad_flat = sobel_mag.flatten()
+    grad_mean = grad_flat.mean()
+    grad_std_val = grad_flat.std()
+    if grad_std_val > 0:
+        features['grad_skewness'] = float(((grad_flat - grad_mean) ** 3).mean() / (grad_std_val ** 3))
+        features['grad_kurtosis'] = float(((grad_flat - grad_mean) ** 4).mean() / (grad_std_val ** 4))
+    else:
+        features['grad_skewness'] = 0.0
+        features['grad_kurtosis'] = 0.0
+
+    # 15. Power spectrum slope
     radial_profile = []
-    for r in range(1, max_dist):
+    for r in range(1, min(crow, ccol)):
         mask = (dist_from_center >= r - 0.5) & (dist_from_center < r + 0.5)
         if mask.sum() > 0:
             radial_profile.append(np.mean(magnitude[mask] ** 2))
@@ -131,9 +239,12 @@ def extract_blur_features(image_path: str) -> dict:
     else:
         features['spectrum_slope'] = 0.0
 
-    # 画像統計量
-    features['img_mean'] = float(img.mean())
-    features['img_std'] = float(img.std())
+    # ============================================
+    # Discussion追加: 高周波/低周波比
+    # ============================================
+    high_freq = magnitude[dist_from_center > 200].mean()
+    low_freq = magnitude[dist_from_center <= 50].mean()
+    features['high_low_freq_ratio'] = float(high_freq / (low_freq + 1e-6))
 
     return features
 
@@ -162,7 +273,7 @@ def process_images(df: pd.DataFrame, data_dir: Path, desc: str = "Processing") -
 
 def main():
     print("=" * 60)
-    print("EXP014: Ridge + GroupKFold (Discussion改善版)")
+    print("EXP014: EXP003 + Discussion改善点")
     print("=" * 60)
 
     # データ読み込み
@@ -171,15 +282,14 @@ def main():
 
     print(f"\nSample: {len(sample_df)} images")
     print(f"Test: {len(test_df)} images")
-    print(f"Patterns in sample: {sorted(sample_df['pattern'].unique())}")
 
     # 特徴量抽出
-    print("\n[1/5] Extracting sample features...")
+    print("\n[1/4] Extracting sample features...")
     sample_features = process_images(sample_df, DATA_DIR, "Sample")
     sample_features = sample_features.merge(sample_df[['id', 'abs_focus', 'pattern']], on='id')
     sample_features.to_csv(OUTPUT_DIR / "sample_features.csv", index=False)
 
-    print("\n[2/5] Extracting test features...")
+    print("\n[2/4] Extracting test features...")
     test_features = process_images(test_df, DATA_DIR, "Test")
     test_features.to_csv(OUTPUT_DIR / "test_features.csv", index=False)
 
@@ -188,109 +298,137 @@ def main():
     print(f"\nNumber of features: {len(feature_cols)}")
 
     # 学習データ
-    X = sample_features[feature_cols].values
-    y = sample_features['abs_focus'].values
+    X_train = sample_features[feature_cols].values
+    y_train = sample_features['abs_focus'].values
     groups = sample_features['pattern'].values
 
-    # ============================================
-    # [3/5] GroupKFold CV (過学習検知用)
-    # ============================================
-    print("\n[3/5] GroupKFold CV (pattern-based)...")
+    print(f"\n[3/4] Training LightGBM model...")
 
-    gkf = GroupKFold(n_splits=5)
-
-    models_to_test = {
-        'Ridge_alpha1': Ridge(alpha=1.0),
-        'Ridge_alpha10': Ridge(alpha=10.0),
-        'Ridge_alpha100': Ridge(alpha=100.0),
-        'Lasso_alpha1': Lasso(alpha=1.0),
-        'ElasticNet': ElasticNet(alpha=1.0, l1_ratio=0.5),
+    # LightGBMパラメータ（EXP003と同じ）
+    lgb_params = {
+        'objective': 'regression',
+        'metric': 'rmse',
+        'boosting_type': 'gbdt',
+        'num_leaves': 15,
+        'max_depth': 4,
+        'learning_rate': 0.05,
+        'feature_fraction': 0.8,
+        'bagging_fraction': 0.8,
+        'bagging_freq': 5,
+        'min_child_samples': 3,
+        'lambda_l1': 0.1,
+        'lambda_l2': 0.1,
+        'verbose': -1,
+        'seed': 42
     }
 
-    results = {}
-
-    for model_name, model in models_to_test.items():
-        oof_preds = np.zeros(len(X))
-
-        for fold, (train_idx, val_idx) in enumerate(gkf.split(X, y, groups)):
-            X_tr, X_val = X[train_idx], X[val_idx]
-            y_tr, y_val = y[train_idx], y[val_idx]
-
-            # StandardScaler + Model
-            scaler = StandardScaler()
-            X_tr_scaled = scaler.fit_transform(X_tr)
-            X_val_scaled = scaler.transform(X_val)
-
-            model_clone = type(model)(**model.get_params())
-            model_clone.fit(X_tr_scaled, y_tr)
-            oof_preds[val_idx] = model_clone.predict(X_val_scaled)
-
-        # Overall RMSE
-        cv_rmse = np.sqrt(np.mean((y - oof_preds) ** 2))
-
-        # Pattern-wise RMSE (macro average)
-        pattern_rmses = []
-        for pattern in sorted(sample_features['pattern'].unique()):
-            mask = groups == pattern
-            if mask.sum() > 0:
-                pattern_rmse = np.sqrt(np.mean((y[mask] - oof_preds[mask]) ** 2))
-                pattern_rmses.append(pattern_rmse)
-        macro_rmse = np.mean(pattern_rmses)
-
-        results[model_name] = {
-            'cv_rmse': cv_rmse,
-            'macro_rmse': macro_rmse,
-            'oof_preds': oof_preds
-        }
-
-        print(f"  {model_name}: CV RMSE={cv_rmse:.4f}, Macro RMSE={macro_rmse:.4f}")
-
-    # ベストモデル選択（Macro RMSEベース）
-    best_model_name = min(results, key=lambda x: results[x]['macro_rmse'])
-    print(f"\nBest model (by Macro RMSE): {best_model_name}")
-
     # ============================================
-    # [4/5] 通常のKFold CVも参考に
+    # 通常のKFold CV（EXP003と同じ）
     # ============================================
-    print("\n[4/5] Standard KFold CV (for comparison)...")
-
+    print("\n--- Standard KFold CV ---")
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    oof_preds_kf = np.zeros(len(X_train))
 
-    for model_name in ['Ridge_alpha10']:
-        model = models_to_test[model_name]
-        oof_preds = np.zeros(len(X))
+    for fold, (train_idx, val_idx) in enumerate(kf.split(X_train)):
+        X_tr, X_val = X_train[train_idx], X_train[val_idx]
+        y_tr, y_val = y_train[train_idx], y_train[val_idx]
 
-        for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
-            X_tr, X_val = X[train_idx], X[val_idx]
-            y_tr, y_val = y[train_idx], y[val_idx]
+        train_data = lgb.Dataset(X_tr, label=y_tr)
+        val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
 
-            scaler = StandardScaler()
-            X_tr_scaled = scaler.fit_transform(X_tr)
-            X_val_scaled = scaler.transform(X_val)
+        model = lgb.train(
+            lgb_params,
+            train_data,
+            num_boost_round=500,
+            valid_sets=[val_data],
+            callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)]
+        )
 
-            model_clone = type(model)(**model.get_params())
-            model_clone.fit(X_tr_scaled, y_tr)
-            oof_preds[val_idx] = model_clone.predict(X_val_scaled)
+        oof_preds_kf[val_idx] = model.predict(X_val)
 
-        cv_rmse = np.sqrt(np.mean((y - oof_preds) ** 2))
-        print(f"  {model_name} (KFold): CV RMSE={cv_rmse:.4f}")
+    cv_rmse_kf = np.sqrt(np.mean((y_train - oof_preds_kf) ** 2))
+    print(f"\nKFold CV RMSE: {cv_rmse_kf:.4f}")
+
+    # パターン別RMSE
+    print("\nPattern-wise KFold CV RMSE:")
+    pattern_rmses_kf = []
+    for pattern in sorted(sample_features['pattern'].unique()):
+        mask = groups == pattern
+        pattern_rmse = np.sqrt(np.mean((y_train[mask] - oof_preds_kf[mask]) ** 2))
+        pattern_rmses_kf.append(pattern_rmse)
+        print(f"  Pattern {pattern}: {pattern_rmse:.4f}")
+    macro_rmse_kf = np.mean(pattern_rmses_kf)
+    print(f"  Macro RMSE: {macro_rmse_kf:.4f}")
 
     # ============================================
-    # [5/5] Full train + Test prediction
+    # GroupKFold CV（過学習検知用）
     # ============================================
-    print("\n[5/5] Full training and test prediction...")
+    print("\n--- GroupKFold CV (過学習検知用) ---")
+    gkf = GroupKFold(n_splits=5)
+    oof_preds_gkf = np.zeros(len(X_train))
 
-    # Ridge alpha=10を使用
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+    for fold, (train_idx, val_idx) in enumerate(gkf.split(X_train, y_train, groups)):
+        X_tr, X_val = X_train[train_idx], X_train[val_idx]
+        y_tr, y_val = y_train[train_idx], y_train[val_idx]
 
-    final_model = Ridge(alpha=10.0)
-    final_model.fit(X_scaled, y)
+        train_data = lgb.Dataset(X_tr, label=y_tr)
+        val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
 
-    # Test予測
+        model = lgb.train(
+            lgb_params,
+            train_data,
+            num_boost_round=500,
+            valid_sets=[val_data],
+            callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)]
+        )
+
+        oof_preds_gkf[val_idx] = model.predict(X_val)
+
+    cv_rmse_gkf = np.sqrt(np.mean((y_train - oof_preds_gkf) ** 2))
+    print(f"\nGroupKFold CV RMSE: {cv_rmse_gkf:.4f}")
+
+    # パターン別RMSE
+    print("\nPattern-wise GroupKFold CV RMSE:")
+    pattern_rmses_gkf = []
+    for pattern in sorted(sample_features['pattern'].unique()):
+        mask = groups == pattern
+        pattern_rmse = np.sqrt(np.mean((y_train[mask] - oof_preds_gkf[mask]) ** 2))
+        pattern_rmses_gkf.append(pattern_rmse)
+        print(f"  Pattern {pattern}: {pattern_rmse:.4f}")
+    macro_rmse_gkf = np.mean(pattern_rmses_gkf)
+    print(f"  Macro RMSE: {macro_rmse_gkf:.4f}")
+
+    # ============================================
+    # 全データで再学習
+    # ============================================
+    print("\nRetraining on full sample data...")
+    train_data = lgb.Dataset(X_train, label=y_train)
+    final_model = lgb.train(
+        lgb_params,
+        train_data,
+        num_boost_round=300
+    )
+
+    # 特徴量重要度
+    importance = pd.DataFrame({
+        'feature': feature_cols,
+        'importance': final_model.feature_importance()
+    }).sort_values('importance', ascending=False)
+
+    print("\nTop 20 Feature Importance:")
+    print(importance.head(20).to_string(index=False))
+
+    # Discussion追加特徴量の重要度を確認
+    print("\n--- Discussion追加特徴量の重要度 ---")
+    discussion_features = [c for c in feature_cols if 'fft_band_' in c or c == 'local_contrast_mean_k32'
+                          or c == 'local_contrast_std_k32' or c == 'high_low_freq_ratio']
+    discussion_importance = importance[importance['feature'].isin(discussion_features)]
+    print(discussion_importance.to_string(index=False))
+
+    # テストデータ予測
+    print(f"\n[4/4] Predicting test data...")
     X_test = test_features[feature_cols].values
-    X_test_scaled = scaler.transform(X_test)
-    y_pred_test = final_model.predict(X_test_scaled)
+    y_pred_test = final_model.predict(X_test)
     y_pred_test = np.clip(y_pred_test, 0, None)
 
     # 提出ファイル作成
@@ -318,45 +456,40 @@ def main():
     print("\n" + "=" * 60)
     print("CV Results Summary")
     print("=" * 60)
-    print("\nGroupKFold (pattern-based) - 過学習検知:")
-    for model_name, res in sorted(results.items(), key=lambda x: x[1]['macro_rmse']):
-        print(f"  {model_name}: Macro RMSE={res['macro_rmse']:.4f}")
+    print(f"\nKFold CV RMSE:      {cv_rmse_kf:.4f} (Macro: {macro_rmse_kf:.4f})")
+    print(f"GroupKFold CV RMSE: {cv_rmse_gkf:.4f} (Macro: {macro_rmse_gkf:.4f})")
+    print(f"\n過学習度合い: GroupKFold - KFold = {cv_rmse_gkf - cv_rmse_kf:.4f}")
 
-    # 可視化
+    # 可視化保存
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-    best_oof = results[best_model_name]['oof_preds']
-    best_macro = results[best_model_name]['macro_rmse']
-
-    axes[0].scatter(y, best_oof, alpha=0.7)
-    axes[0].plot([0, 80], [0, 80], 'r--', label='y=x')
-    axes[0].set_xlabel('True abs_focus')
-    axes[0].set_ylabel('Predicted abs_focus')
-    axes[0].set_title(f'{best_model_name} OOF (Macro RMSE={best_macro:.2f})')
+    axes[0].hist(y_train, bins=20, alpha=0.7, label='Sample (true)')
+    axes[0].hist(oof_preds_kf, bins=20, alpha=0.7, label='Sample (OOF pred)')
+    axes[0].set_xlabel('abs_focus')
+    axes[0].set_title(f'KFold: True vs OOF (RMSE={cv_rmse_kf:.2f})')
     axes[0].legend()
 
-    axes[1].hist(y, bins=20, alpha=0.7, label='True')
-    axes[1].hist(best_oof, bins=20, alpha=0.7, label='OOF Pred')
+    axes[1].hist(y_pred_test, bins=30, alpha=0.7, color='green')
     axes[1].set_xlabel('abs_focus')
-    axes[1].set_title('Sample: True vs OOF Predicted')
-    axes[1].legend()
+    axes[1].set_title('Test: Predicted Distribution')
 
-    axes[2].hist(y_pred_test, bins=30, alpha=0.7, color='green')
-    axes[2].set_xlabel('abs_focus')
-    axes[2].set_title('Test: Predicted Distribution')
+    axes[2].barh(importance.head(15)['feature'], importance.head(15)['importance'])
+    axes[2].set_xlabel('Importance')
+    axes[2].set_title('Top 15 Feature Importance')
 
     plt.tight_layout()
     plt.savefig(OUTPUT_DIR / "prediction_distribution.png", dpi=150)
     print(f"\nSaved: {OUTPUT_DIR / 'prediction_distribution.png'}")
     plt.close()
 
+    importance.to_csv(OUTPUT_DIR / "feature_importance.csv", index=False)
+
     # CV結果をCSVに保存
-    cv_results_df = pd.DataFrame([
-        {'model': k, 'cv_rmse': v['cv_rmse'], 'macro_rmse': v['macro_rmse']}
-        for k, v in results.items()
-    ]).sort_values('macro_rmse')
-    cv_results_df.to_csv(OUTPUT_DIR / "cv_results.csv", index=False)
-    print(f"Saved: {OUTPUT_DIR / 'cv_results.csv'}")
+    cv_results = pd.DataFrame([
+        {'method': 'KFold', 'cv_rmse': cv_rmse_kf, 'macro_rmse': macro_rmse_kf},
+        {'method': 'GroupKFold', 'cv_rmse': cv_rmse_gkf, 'macro_rmse': macro_rmse_gkf}
+    ])
+    cv_results.to_csv(OUTPUT_DIR / "cv_results.csv", index=False)
 
 
 if __name__ == '__main__':

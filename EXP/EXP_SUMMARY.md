@@ -16,7 +16,7 @@
 | EXP011 | FOV-Normalized Features (99特徴量) | 11.76 | 20.27 |
 | EXP012 | Feature Selection (15特徴量) | 10.96 | 20.14 |
 | EXP013 | EXP003 + Blur Add-ons (65特徴量) | 11.28 | 19.24 |
-| EXP014 | Ridge + GroupKFold (Discussion版) | TBD | TBD |
+| EXP014 | EXP003 + Discussion特徴量 (73特徴量) | TBD | TBD |
 
 ---
 
@@ -529,41 +529,33 @@ EXP003にボケ特化の追加指標を重ねることで、ドメイン差に�
 
 ---
 
-## EXP014: Ridge + GroupKFold (Discussion改善版)
+## EXP014: EXP003 + Discussion特徴量
 
 ### 仮説
 
-Discussionで共有されたLB 22.3のシンプルなコードから得られた知見:
-1. **過学習問題**: CatBoostでGroupKFoldするとCV 20.21、LB 24（乖離が大きい）
-2. **データ量不足**: 55枚のSampleに対してLightGBMは複雑すぎる可能性
-3. **シンプルなモデル**: Ridge回帰など正則化の強いモデルが有効
+EXP003（LB 19.16）をベースに、Discussion（LB 22.3）で使われていた特徴量を追加。
+Discussionのコード自体はスコアが悪いが、特徴量の一部は有用な可能性がある。
+
+### Discussionからの追加特徴量
+
+| カテゴリ | 特徴量 | EXP003との違い |
+|---------|--------|---------------|
+| 周波数帯域std | `fft_band_{r}_std` (5帯域) | EXP003はmeanのみ |
+| 局所コントラスト | `local_contrast_*_k32` | EXP003はkernel=3,5,7,11 |
+| 高周波/低周波比 | `high_low_freq_ratio` | 新規追加 |
 
 ### 手法
 
-1. **GroupKFold**: patternをグループとしてCV分割（パターン間汎化を正確に評価）
-2. **シンプルなモデル**: Ridge, Lasso, ElasticNetを比較
-3. **Discussion版特徴量**: 周波数帯域のmean + std（5帯域×2）
-4. **EXP003から厳選**: Multi-scale LoG, Tenengrad, Power spectrum slopeなど
-
-### 特徴量（22個）
-
-| カテゴリ | 特徴量 |
-|---------|--------|
-| Laplacian | `laplacian_var`, `laplacian_mean_abs` |
-| FFT (5帯域×2) | `fft_band_{r}_mean`, `fft_band_{r}_std` |
-| Frequency Ratio | `high_low_freq_ratio` |
-| Sobel | `sobel_mean`, `sobel_std`, `sobel_p95` |
-| Local Contrast | `local_contrast_mean` (kernel=32) |
-| Multi-scale LoG | `log_var_s{1,2,3}` |
-| Tenengrad | `tenengrad_mean` |
-| Power Spectrum | `spectrum_slope` |
-| Image Stats | `img_mean`, `img_std` |
+1. **EXP003の全特徴量を継承**（60特徴量）
+2. **Discussion追加特徴量**（13特徴量）
+3. **モデル**: LightGBM（EXP003と同じパラメータ）
+4. **CV**: KFold（通常） + GroupKFold（過学習検知用）
 
 ### 実験
 
-| Child Exp | モデル | 特徴量数 | GroupKFold Macro RMSE | LB Score | 備考 |
-|-----------|--------|----------|----------------------|----------|------|
-| child-exp000 | Ridge (α=10) | 22 | TBD | TBD | Discussion改善版 |
+| Child Exp | 特徴量数 | KFold CV RMSE | GroupKFold CV RMSE | LB Score | 備考 |
+|-----------|----------|---------------|-------------------|----------|------|
+| child-exp000 | 73 | TBD | TBD | TBD | EXP003 + Discussion特徴量 |
 
 ### 結果・知見
 

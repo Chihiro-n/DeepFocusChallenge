@@ -1,49 +1,46 @@
 # EXP014 child-exp000
-# Ridge + GroupKFold (Discussion改善版)
+# EXP003 + Discussion改善点
 
-# Discussion (LB 22.3) からの改善点:
-# 1. GroupKFold: patternでグループ分割（過学習検知）
-# 2. シンプルなモデル: Ridge回帰（過学習対策）
-# 3. 周波数帯域のstd追加（Discussion版と同様）
-# 4. Full trainでLB確認
+# ベース: EXP003 (LB 19.16)
+# 追加: Discussionから有効そうな点のみ
 
-# 特徴量 (Discussion版 + EXP003からの抜粋):
-# - ラプラシアン分散
-# - FFT周波数帯域別 mean + std (5帯域)
+# Discussion追加特徴量:
+# - 周波数帯域のstd (5帯域: 0-50, 50-100, 100-200, 200-300, 300-512)
+# - 局所コントラスト kernel=32 (EXP003は3,5,7,11)
 # - 高周波/低周波比
-# - Sobelエッジ勾配統計
-# - 局所コントラスト (kernel=32)
-# - Multi-scale LoG (sigma=1,2,3)
-# - Tenengrad
-# - Power spectrum slope
-# - 画像統計量
 
-# モデル比較:
-models:
-  - name: Ridge_alpha1
-    type: Ridge
-    alpha: 1.0
-  - name: Ridge_alpha10
-    type: Ridge
-    alpha: 10.0
-  - name: Ridge_alpha100
-    type: Ridge
-    alpha: 100.0
-  - name: Lasso_alpha1
-    type: Lasso
-    alpha: 1.0
-  - name: ElasticNet
-    type: ElasticNet
-    alpha: 1.0
-    l1_ratio: 0.5
+# EXP003から継承:
+# - 全60特徴量
+# - LightGBMモデル
+# - 同じハイパーパラメータ
+
+# モデル: LightGBM（EXP003と同じ）
+lgb_params:
+  objective: regression
+  metric: rmse
+  boosting_type: gbdt
+  num_leaves: 15
+  max_depth: 4
+  learning_rate: 0.05
+  feature_fraction: 0.8
+  bagging_fraction: 0.8
+  bagging_freq: 5
+  min_child_samples: 3
+  lambda_l1: 0.1
+  lambda_l2: 0.1
+  seed: 42
+
+num_boost_round: 300
+early_stopping_rounds: 50
 
 # CV設定:
 cv:
-  method: GroupKFold
-  n_splits: 5
-  group_col: pattern
+  - method: KFold
+    n_splits: 5
+    shuffle: true
+    random_state: 42
+  - method: GroupKFold  # 過学習検知用
+    n_splits: 5
+    group_col: pattern
 
-# 最終提出モデル:
-final_model:
-  type: Ridge
-  alpha: 10.0
+# 特徴量数: 60 (EXP003) + 13 (Discussion) = 73
