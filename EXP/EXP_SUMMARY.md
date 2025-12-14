@@ -15,6 +15,8 @@
 | EXP010 | Contrast-Invariant Features (81特徴量) | 11.31 | 20.32 |
 | EXP011 | FOV-Normalized Features (99特徴量) | 11.76 | 20.27 |
 | EXP012 | Feature Selection (15特徴量) | 10.96 | 20.14 |
+| EXP013 | EXP003 + Blur Add-ons (65特徴量) | 11.28 | 19.24 |
+| EXP014 | Ridge + GroupKFold (Discussion版) | TBD | TBD |
 
 ---
 
@@ -490,3 +492,79 @@ EXP003の60特徴量から重要度の高いものだけを選択し、オーバ
    - 問題はオーバーフィットではなく、ドメインシフトの可能性
 
 ---
+
+## EXP013: EXP003 + Blur Add-ons
+
+### 仮説
+
+EXP003にボケ特化の追加指標を重ねることで、ドメイン差に左右されない高周波減衰の捕捉力を高める。
+- パワースペクトル重心/半径（低周波寄り度合い）
+- LoGピラミッド減衰傾き（スケール間の高周波落ち方）
+- 弱リブラー差分（σ=1.5での追加ぼかしによる相対減少）
+
+### 手法
+
+1. EXP003の全60特徴量を継承
+2. 追加特徴（計5本）を導入: `power_centroid_norm`, `power_radius_p50_norm`, `log_pyramid_slope`, `reblur_lap_var_ratio_s1p5`, `reblur_sobel_p95_drop_s1p5`
+3. LightGBMはEXP003と同設定（num_leaves=15, max_depth=4, 500r/ES）
+
+### 実験
+
+| Child Exp | 特徴量数 | CV RMSE | LB Score | 備考 |
+|-----------|----------|---------|----------|------|
+| child-exp000 | 65 | 11.28 | 19.24 | EXP003よりわずかに悪化 |
+
+### 結果・知見
+
+1. **LBは僅差で悪化** - EXP003 (19.16) → 19.24
+2. **CVはわずかに改善** - 11.35 → 11.28 だがLBに未反映
+3. **Pattern別RMSE**:
+   - Pattern 1: 14.80（EXP003: 15.36から改善）
+   - Pattern 4: 5.07（EXP003: 5.32から改善）
+4. **Feature Importance**: 追加特徴はTop15に入らず（MTF/JNB/LoGが引き続き支配）
+5. **考察**:
+   - 追加指標は方向性は悪くないが、寄与が小さい
+   - Pattern1/4は改善傾向だが総合LBはほぼ横ばい
+   - さらなる効果には特徴量のスケーリング/組み合わせ調整が必要
+
+---
+
+## EXP014: Ridge + GroupKFold (Discussion改善版)
+
+### 仮説
+
+Discussionで共有されたLB 22.3のシンプルなコードから得られた知見:
+1. **過学習問題**: CatBoostでGroupKFoldするとCV 20.21、LB 24（乖離が大きい）
+2. **データ量不足**: 55枚のSampleに対してLightGBMは複雑すぎる可能性
+3. **シンプルなモデル**: Ridge回帰など正則化の強いモデルが有効
+
+### 手法
+
+1. **GroupKFold**: patternをグループとしてCV分割（パターン間汎化を正確に評価）
+2. **シンプルなモデル**: Ridge, Lasso, ElasticNetを比較
+3. **Discussion版特徴量**: 周波数帯域のmean + std（5帯域×2）
+4. **EXP003から厳選**: Multi-scale LoG, Tenengrad, Power spectrum slopeなど
+
+### 特徴量（22個）
+
+| カテゴリ | 特徴量 |
+|---------|--------|
+| Laplacian | `laplacian_var`, `laplacian_mean_abs` |
+| FFT (5帯域×2) | `fft_band_{r}_mean`, `fft_band_{r}_std` |
+| Frequency Ratio | `high_low_freq_ratio` |
+| Sobel | `sobel_mean`, `sobel_std`, `sobel_p95` |
+| Local Contrast | `local_contrast_mean` (kernel=32) |
+| Multi-scale LoG | `log_var_s{1,2,3}` |
+| Tenengrad | `tenengrad_mean` |
+| Power Spectrum | `spectrum_slope` |
+| Image Stats | `img_mean`, `img_std` |
+
+### 実験
+
+| Child Exp | モデル | 特徴量数 | GroupKFold Macro RMSE | LB Score | 備考 |
+|-----------|--------|----------|----------------------|----------|------|
+| child-exp000 | Ridge (α=10) | 22 | TBD | TBD | Discussion改善版 |
+
+### 結果・知見
+
+（実行後に記入）

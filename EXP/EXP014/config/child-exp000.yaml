@@ -1,0 +1,49 @@
+# EXP014 child-exp000
+# Ridge + GroupKFold (Discussion改善版)
+
+# Discussion (LB 22.3) からの改善点:
+# 1. GroupKFold: patternでグループ分割（過学習検知）
+# 2. シンプルなモデル: Ridge回帰（過学習対策）
+# 3. 周波数帯域のstd追加（Discussion版と同様）
+# 4. Full trainでLB確認
+
+# 特徴量 (Discussion版 + EXP003からの抜粋):
+# - ラプラシアン分散
+# - FFT周波数帯域別 mean + std (5帯域)
+# - 高周波/低周波比
+# - Sobelエッジ勾配統計
+# - 局所コントラスト (kernel=32)
+# - Multi-scale LoG (sigma=1,2,3)
+# - Tenengrad
+# - Power spectrum slope
+# - 画像統計量
+
+# モデル比較:
+models:
+  - name: Ridge_alpha1
+    type: Ridge
+    alpha: 1.0
+  - name: Ridge_alpha10
+    type: Ridge
+    alpha: 10.0
+  - name: Ridge_alpha100
+    type: Ridge
+    alpha: 100.0
+  - name: Lasso_alpha1
+    type: Lasso
+    alpha: 1.0
+  - name: ElasticNet
+    type: ElasticNet
+    alpha: 1.0
+    l1_ratio: 0.5
+
+# CV設定:
+cv:
+  method: GroupKFold
+  n_splits: 5
+  group_col: pattern
+
+# 最終提出モデル:
+final_model:
+  type: Ridge
+  alpha: 10.0
