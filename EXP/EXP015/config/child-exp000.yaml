@@ -1,0 +1,61 @@
+# EXP015 child-exp000
+# Noise Injection + ノイズ耐性特徴量
+
+# 仮説:
+# - Trainはノイズレス（クリーン）、Sample/Testはノイズあり
+# - このドメインシフトがボケ検出を妨害している
+# - Train画像にノイズを注入してドメインを揃える
+
+# 手法:
+# 1. Sampleのノイズレベルを推定（平坦領域の標準偏差）
+# 2. Train画像にノイズ注入して特徴量の基準値を計算
+# 3. ノイズ耐性特徴量のみ使用
+# 4. Train基準でZ-score化（EXP002の知見）
+
+# ノイズ耐性特徴量:
+features:
+  # 除外（ノイズに敏感）:
+  excluded:
+    - laplacian_var (生の値)
+    - sobel_* with k=3
+    - fft_vhigh_ratio (最高周波数帯域)
+
+  # 使用（ノイズ耐性あり）:
+  included:
+    - fft_low_ratio, fft_mid_ratio, fft_high_ratio (高周波除く)
+    - autocorr_h, autocorr_v, autocorr_total (Vollath法)
+    - sobel_*_k7, sobel_*_k11 (大きいカーネル)
+    - local_contrast_*_k11, k21, k32 (大きいカーネル)
+    - log_var_s3, s5, s7 (大きいσ)
+    - tenengrad_mean (平滑化後)
+    - tophat_*, blackhat_*, morph_grad_* (モルフォロジー)
+    - spectrum_slope_mid (中周波数領域のみ)
+
+# モデル: LightGBM
+lgb_params:
+  objective: regression
+  metric: rmse
+  boosting_type: gbdt
+  num_leaves: 15
+  max_depth: 4
+  learning_rate: 0.05
+  feature_fraction: 0.8
+  bagging_fraction: 0.8
+  bagging_freq: 5
+  min_child_samples: 3
+  lambda_l1: 0.1
+  lambda_l2: 0.1
+  seed: 42
+
+num_boost_round: 300
+early_stopping_rounds: 50
+
+# CV設定:
+cv:
+  - method: KFold
+    n_splits: 5
+    shuffle: true
+    random_state: 42
+  - method: GroupKFold
+    n_splits: 5
+    group_col: pattern

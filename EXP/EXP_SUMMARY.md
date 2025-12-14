@@ -16,7 +16,8 @@
 | EXP011 | FOV-Normalized Features (99特徴量) | 11.76 | 20.27 |
 | EXP012 | Feature Selection (15特徴量) | 10.96 | 20.14 |
 | EXP013 | EXP003 + Blur Add-ons (65特徴量) | 11.28 | 19.24 |
-| EXP014 | EXP003 + Discussion特徴量 (73特徴量) | TBD | TBD |
+| EXP014 | EXP003 + Discussion特徴量 (73特徴量) | 11.54 | 19.84 |
+| EXP015 | Noise Injection + ノイズ耐性特徴量 | TBD | TBD |
 
 ---
 
@@ -555,7 +556,63 @@ Discussionのコード自体はスコアが悪いが、特徴量の一部は有�
 
 | Child Exp | 特徴量数 | KFold CV RMSE | GroupKFold CV RMSE | LB Score | 備考 |
 |-----------|----------|---------------|-------------------|----------|------|
-| child-exp000 | 73 | TBD | TBD | TBD | EXP003 + Discussion特徴量 |
+| child-exp000 | 73 | 11.54 | 20.26 | 19.84 | EXP003より悪化 |
+
+### 結果・知見
+
+1. **LB悪化**: EXP003 (19.16) → 19.84（+0.68）
+2. **過学習検知**: GroupKFold (20.26) - KFold (11.54) = **8.73の乖離**
+   - これは非常に大きい乖離 → パターン間の汎化が困難
+3. **Discussion追加特徴量の重要度**:
+   - `fft_band_50_100_mean` (60) - Top 20入り
+   - `local_contrast_std_k32` (51) - Top 20入り
+   - 追加特徴量は一定の寄与があるが、LB改善には繋がらず
+4. **Pattern別RMSE (GroupKFold)**:
+   - Pattern 0: 15.98
+   - Pattern 1: **29.03**（依然として最悪）
+   - Pattern 2: 23.28
+   - Pattern 3: 15.48
+   - Pattern 4: 13.16
+5. **考察**:
+   - 特徴量を増やしてもLBは悪化（60→73で悪化）
+   - EXP003の60特徴量がバランス最適の可能性
+   - 過学習問題は特徴量追加では解決できない
+
+---
+
+## EXP015: Noise Injection + ノイズ耐性特徴量
+
+### 仮説
+
+Trainはノイズレス（クリーン）、Sample/Testはノイズあり（実環境）という**ドメインシフト**が存在。
+このドメインシフトがボケ検出を妨害している。
+
+**メカニズム**:
+- クリーンな画像（Train）: 高周波成分 = 真のテクスチャ（エッジ）
+- ノイズあり画像（Sample）: 高周波成分 = 真のエッジ + ノイズ
+- 結果: モデルは「Sample画像は高周波成分が多い（ノイズのせい）からシャープだ」と誤認
+
+### 手法
+
+1. **ノイズレベル推定**: Sample画像の平坦領域からノイズの分散を推定
+2. **Noise Injection**: Train画像にガウシアンノイズを注入してドメインを揃える
+3. **Train基準Z-score化**: ノイズ注入後のTrainを基準に特徴量を正規化
+4. **ノイズ耐性特徴量のみ使用**:
+
+| 使用（ノイズ耐性あり） | 除外（ノイズに敏感） |
+|----------------------|-------------------|
+| 中周波数帯域（fft_mid_ratio） | 最高周波数帯域（fft_vhigh_ratio） |
+| Autocorrelation（Vollath法） | 生のLaplacian_var |
+| 大きいカーネル勾配（k=7,11） | 小カーネル勾配（k=3） |
+| 大きいカーネル局所コントラスト | 小カーネル局所コントラスト |
+| Multi-scale LoG（σ=3,5,7） | Multi-scale LoG（σ=1） |
+| モルフォロジー特徴量 | - |
+
+### 実験
+
+| Child Exp | 特徴量数 | KFold CV RMSE | GroupKFold CV RMSE | LB Score | 備考 |
+|-----------|----------|---------------|-------------------|----------|------|
+| child-exp000 | TBD | TBD | TBD | TBD | Noise Injection |
 
 ### 結果・知見
 
