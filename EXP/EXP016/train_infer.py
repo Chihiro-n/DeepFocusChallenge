@@ -298,8 +298,61 @@ def load_trained_model(path, config):
 # 評価
 # ============================================
 
+class SimpleValDataset(Dataset):
+    """TTAなしのシンプルな評価用データセット"""
+    def __init__(self, data: list, config: Config):
+        self.data = data
+        self.config = config
+        self.val_trans = get_val_transforms(config.crop_size)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        image = Image.open(item["image_path"]).convert("RGB")
+        image = apply_fov_and_crop(
+            image, item["fov"], self.val_trans, self.config.max_image_size
+        )
+        return {
+            "image": image,
+            "label": item["label"],
+            "original_label": item["label"]
+        }
+
+
+def evaluate_simple(model, processor, val_data: list, config: Config):
+    """TTAなしのシンプル評価（高速）"""
+    model.eval()
+    loader = DataLoader(
+        SimpleValDataset(val_data, config),
+        batch_size=config.batch_size * 4,  # TTAがないので大きめバッチ
+        shuffle=False,
+        collate_fn=lambda x: collate_fn(x, processor, config.prompt)
+    )
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for batch in tqdm(loader, desc="Evaluating", leave=False):
+            batch = {
+                k: v.to(config.device) if isinstance(v, torch.Tensor) else v
+                for k, v in batch.items()
+            }
+            preds = torch.clamp(
+                model(**batch)["logits"].squeeze(-1), 0, 100
+            ).float().cpu().numpy()
+            all_preds.extend(preds)
+            all_labels.extend(batch["original_labels"].cpu().numpy())
+
+    all_preds = np.array(all_preds)
+    all_labels = np.array(all_labels)
+    rmse = np.sqrt(np.mean((all_labels - all_preds) ** 2))
+    return rmse, all_preds, all_labels
+
+
 def evaluate_with_tta(model, processor, val_data: list, config: Config):
-    """TTA付きで評価"""
+    """TTA付きで評価（テスト推論用）"""
     model.eval()
     loader = DataLoader(
         TTADataset(val_data, config),
@@ -422,6 +475,23 @@ def train_fold(config, train_data, val_data, fold):
                     shutil.rmtree(p_del)
             print(f"Snapshot saved! Best RMSE: {snapshots[0][0]:.4f}")
 
+    # OOF予測（モデル再ロード不要、best snapshotのweightsを現在のモデルにロード）
+    print(f"Generating OOF predictions for Fold {fold}...")
+    best_rmse, best_ep, best_path = snapshots[0]
+
+    # best snapshotのweightsをロード（ベースモデルは再ロード不要）
+    from safetensors.torch import load_file
+    adapter_path = os.path.join(best_path, "adapter_model.safetensors")
+    if os.path.exists(adapter_path):
+        best_lora_state = load_file(adapter_path)
+    else:
+        best_lora_state = torch.load(os.path.join(best_path, "adapter_model.bin"), map_location=config.device)
+    model.base_model.load_state_dict(best_lora_state, strict=False)
+    best_cls_state = torch.load(os.path.join(best_path, "classifier_head.pt"), map_location=config.device)
+    model.classifier.load_state_dict(best_cls_state["classifier"])
+
+    _, oof_pred, _ = evaluate_simple(model, processor, val_data, config)
+
     # Snapshot整理
     final_paths = []
     print(f"\nFinalizing Fold {fold} snapshots...")
@@ -435,7 +505,11 @@ def train_fold(config, train_data, val_data, fold):
         final_paths.append(str(fpath))
         print(f"  - {name}: Epoch {ep}, RMSE {r:.4f} -> {fpath}")
 
-    return final_paths, snapshots[0][0]
+    # メモリ解放
+    del model
+    torch.cuda.empty_cache()
+
+    return final_paths, best_rmse, oof_pred
 
 
 # ============================================
@@ -526,19 +600,9 @@ def main():
         v_data = [all_data[i] for i in v_idx]
         val_patterns = sorted(set([all_data[i]['pattern'] for i in v_idx]))
         print(f"\nFold {fold+1}: Val patterns = {val_patterns}")
-        snapshot_paths, best_rmse = train_fold(config, t_data, v_data, fold + 1)
+        snapshot_paths, best_rmse, oof_pred = train_fold(config, t_data, v_data, fold + 1)
         cv_scores.append(best_rmse)
-
-        # OOF Prediction
-        print(f"Generating OOF predictions for Fold {fold+1}...")
-        fold_preds = []
-        for path in snapshot_paths:
-            m, p = load_trained_model(path, config)
-            _, pr, _ = evaluate_with_tta(m, p, v_data, config)
-            fold_preds.append(pr)
-            del m
-            torch.cuda.empty_cache()
-        oof_preds[v_idx] = np.mean(fold_preds, axis=0)
+        oof_preds[v_idx] = oof_pred
 
     # CVサマリー
     labels = np.array([d['label'] for d in all_data])
@@ -560,21 +624,66 @@ def main():
     print(f"\n{'='*20} Test Inference Start {'='*20}")
     test_results = []
 
+    # ベースモデルを1回だけロード（量子化は1回のみ）
+    print("Loading base model (one-time quantization)...")
+    from safetensors.torch import load_file
+    base_model = Qwen3VLForConditionalGeneration.from_pretrained(
+        config.model_name,
+        quantization_config=get_bnb_config(),
+        device_map="auto",
+        trust_remote_code=True
+    )
+    processor = AutoProcessor.from_pretrained(config.model_name, trust_remote_code=True)
+    if processor.tokenizer.pad_token is None:
+        processor.tokenizer.pad_token = processor.tokenizer.eos_token
+
+    # 最初のsnapshotでLoRAを適用してモデル構築
+    first_path = None
+    for fold in range(1, n_folds + 1):
+        fdir = MODEL_DIR / f"fold_{fold}"
+        for name in ["snapshot_best", "snapshot_2nd_best"]:
+            path = fdir / name
+            if path.exists():
+                first_path = str(path)
+                break
+        if first_path:
+            break
+
+    base_model = PeftModel.from_pretrained(base_model, first_path)
+    cls_state = torch.load(os.path.join(first_path, "classifier_head.pt"), map_location=config.device)
+    model = Qwen3VLClassifier(base_model, base_model.config.text_config.hidden_size, cls_state["dropout"])
+    model.classifier.load_state_dict(cls_state["classifier"])
+    model = model.to(config.device, dtype=torch.bfloat16)
+
+    # 各snapshotでLoRAアダプターのweightsだけ差し替えて推論
     for fold in range(1, n_folds + 1):
         fdir = MODEL_DIR / f"fold_{fold}"
         for name in ["snapshot_best", "snapshot_2nd_best"]:
             path = fdir / name
             if not path.exists():
                 continue
-            print(f"Loading {path}...")
-            m, p = load_trained_model(str(path), config)
+            print(f"Swapping adapter: {path}...")
+
+            # LoRAアダプターのweightsをロード
+            adapter_path = os.path.join(str(path), "adapter_model.safetensors")
+            if os.path.exists(adapter_path):
+                lora_state = load_file(adapter_path)
+            else:
+                lora_state = torch.load(os.path.join(str(path), "adapter_model.bin"), map_location=config.device)
+            model.base_model.load_state_dict(lora_state, strict=False)
+
+            # Classifier headのweightsをロード
+            cls_state = torch.load(os.path.join(str(path), "classifier_head.pt"), map_location=config.device)
+            model.classifier.load_state_dict(cls_state["classifier"])
+
             preds = []
             for i in tqdm(range(0, len(test_df), config.batch_size), desc="Predicting"):
                 b = test_df.iloc[i:i + config.batch_size]
-                preds.extend(predict_batch(m, p, b.filepath.tolist(), b.FOV.tolist(), config))
+                preds.extend(predict_batch(model, processor, b.filepath.tolist(), b.FOV.tolist(), config))
             test_results.append(preds)
-            del m
-            torch.cuda.empty_cache()
+
+    del model
+    torch.cuda.empty_cache()
 
     # 提出ファイル作成
     test_df["abs_focus"] = np.mean(test_results, axis=0)
