@@ -103,3 +103,18 @@ execute_train*.ipynb
 
 
 notebooks/EDA
+
+
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.webp
+*.svg
+*.ico
+*.heic
+*.heif
+
+Depth-Anything-3/
