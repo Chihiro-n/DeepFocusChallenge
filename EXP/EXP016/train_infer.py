@@ -30,7 +30,7 @@ from tqdm import tqdm
 import os
 import numpy as np
 import random
-from sklearn.model_selection import KFold
+from sklearn.model_selection import GroupKFold
 import albumentations as A
 import shutil
 import pandas as pd
@@ -39,8 +39,11 @@ import pandas as pd
 # ============================================
 # パス設定
 # ============================================
-DATA_DIR = Path("input/DeepFocusChallenge_v5")
-OUTPUT_DIR = Path("EXP/EXP016/outputs")
+# データバージョン選択: "v2" or "v5"
+DATA_VERSION = "v5"
+
+DATA_DIR = Path(f"input/DeepFocusChallenge_{DATA_VERSION}")
+OUTPUT_DIR = Path(f"EXP/EXP016/outputs_{DATA_VERSION}")
 MODEL_DIR = OUTPUT_DIR / "models"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -501,21 +504,28 @@ def main():
         {
             "image_path": row.filepath,
             "label": float(row.abs_focus),
-            "fov": float(row.FOV)
+            "fov": float(row.FOV),
+            "pattern": int(row.pattern)
         }
         for row in train_df.itertuples()
     ]
 
-    # K-Fold CV
-    kfold = KFold(n_splits=config.n_folds, shuffle=True, random_state=config.seed)
+    # GroupKFold CV (patternでグループ化してリーク防止)
+    groups = [d['pattern'] for d in all_data]
+    n_patterns = len(set(groups))
+    n_folds = min(config.n_folds, n_patterns)  # パターン数以下のfold数に調整
+    gkfold = GroupKFold(n_splits=n_folds)
     oof_preds = np.zeros(len(all_data))
     cv_scores = []
 
-    print(f"\nStarting {config.n_folds}-Fold CV with FOV/2 Scaling...")
+    print(f"\nStarting {n_folds}-Fold GroupKFold CV (grouped by pattern)...")
+    print(f"Number of patterns: {n_patterns}")
 
-    for fold, (t_idx, v_idx) in enumerate(kfold.split(range(len(all_data)))):
+    for fold, (t_idx, v_idx) in enumerate(gkfold.split(range(len(all_data)), groups=groups)):
         t_data = [all_data[i] for i in t_idx]
         v_data = [all_data[i] for i in v_idx]
+        val_patterns = sorted(set([all_data[i]['pattern'] for i in v_idx]))
+        print(f"\nFold {fold+1}: Val patterns = {val_patterns}")
         snapshot_paths, best_rmse = train_fold(config, t_data, v_data, fold + 1)
         cv_scores.append(best_rmse)
 
@@ -550,7 +560,7 @@ def main():
     print(f"\n{'='*20} Test Inference Start {'='*20}")
     test_results = []
 
-    for fold in range(1, config.n_folds + 1):
+    for fold in range(1, n_folds + 1):
         fdir = MODEL_DIR / f"fold_{fold}"
         for name in ["snapshot_best", "snapshot_2nd_best"]:
             path = fdir / name
