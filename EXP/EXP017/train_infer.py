@@ -1,12 +1,12 @@
 """
-EXP016: Qwen3-VL LoRA Fine-tuning for Defocus Estimation
+EXP017: Qwen3-VL LoRA Fine-tuning for Defocus Estimation
+v2 + v5 のsampleデータを結合して学習
 
-Discussion公開notebook (exp0165_pub) をベースに作成。
-Qwen3-VL-2B-Instruct + LoRAでSEM画像のdefocus推定を行う。
+EXP016をベースに、v2とv5のsampleデータを結合して学習データを増やす。
 
 使用方法:
 ```
-python EXP/EXP016/train_infer.py
+python EXP/EXP017/train_infer.py
 ```
 
 必要なパッケージ:
@@ -39,11 +39,9 @@ import pandas as pd
 # ============================================
 # パス設定
 # ============================================
-# データバージョン選択: "v2" or "v5"
-DATA_VERSION = "v5"
-
-DATA_DIR = Path(f"input/DeepFocusChallenge_{DATA_VERSION}")
-OUTPUT_DIR = Path(f"EXP/EXP016/outputs_{DATA_VERSION}")
+DATA_DIR_V2 = Path("input/DeepFocusChallenge_v2")
+DATA_DIR_V5 = Path("input/DeepFocusChallenge_v5")
+OUTPUT_DIR = Path("EXP/EXP017/outputs")
 MODEL_DIR = OUTPUT_DIR / "models"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -85,7 +83,7 @@ class Config:
     seed = 42
     num_snapshots = 2
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    exp_name = "exp016"
+    exp_name = "exp017"
 
 
 # ============================================
@@ -604,27 +602,47 @@ def predict_batch(model, processor, image_paths, fovs, config, use_tta=False):
 
 def main():
     print("=" * 60)
-    print("EXP016: Qwen3-VL LoRA Fine-tuning")
+    print("EXP017: Qwen3-VL LoRA Fine-tuning (v2 + v5 combined)")
     print("=" * 60)
 
     config = Config()
     set_seed(config.seed)
 
-    # データ読み込み
-    print(f"\nData directory: {DATA_DIR}")
-    train_df = pd.read_csv(DATA_DIR / "sample.csv")
-    test_df = pd.read_csv(DATA_DIR / "test.csv")
+    # ============================================
+    # データ読み込み（v2 + v5を結合）
+    # ============================================
+    print(f"\nLoading data from v2 and v5...")
 
-    # filepathを絶対パスに変換 (./sample/xxx.JPG -> DATA_DIR/sample/xxx.JPG)
-    train_df["filepath"] = train_df["filepath"].apply(
-        lambda x: str(DATA_DIR / x.lstrip("./"))
+    # v2 sample data
+    sample_v2 = pd.read_csv(DATA_DIR_V2 / "sample.csv")
+    sample_v2["filepath"] = sample_v2["filepath"].apply(
+        lambda x: str(DATA_DIR_V2 / x.lstrip("./"))
     )
+    sample_v2["source"] = "v2"
+    print(f"  v2 sample: {len(sample_v2)} images, {sample_v2['pattern'].nunique()} patterns")
+
+    # v5 sample data
+    sample_v5 = pd.read_csv(DATA_DIR_V5 / "sample.csv")
+    sample_v5["filepath"] = sample_v5["filepath"].apply(
+        lambda x: str(DATA_DIR_V5 / x.lstrip("./"))
+    )
+    sample_v5["source"] = "v5"
+    print(f"  v5 sample: {len(sample_v5)} images, {sample_v5['pattern'].nunique()} patterns")
+
+    # v5 test data (推論用)
+    test_df = pd.read_csv(DATA_DIR_V5 / "test.csv")
     test_df["filepath"] = test_df["filepath"].apply(
-        lambda x: str(DATA_DIR / x.lstrip("./"))
+        lambda x: str(DATA_DIR_V5 / x.lstrip("./"))
     )
+    print(f"  v5 test: {len(test_df)} images")
 
-    print(f"Sample: {len(train_df)} images")
-    print(f"Test: {len(test_df)} images")
+    # パターン番号の衝突を避けるため、v2のpatternにオフセットを追加
+    max_pattern_v5 = sample_v5["pattern"].max()
+    sample_v2["pattern"] = sample_v2["pattern"] + max_pattern_v5 + 1
+
+    # 結合
+    train_df = pd.concat([sample_v2, sample_v5], ignore_index=True)
+    print(f"\nCombined training data: {len(train_df)} images, {train_df['pattern'].nunique()} patterns")
 
     # 学習データ準備
     all_data = [
@@ -632,7 +650,8 @@ def main():
             "image_path": row.filepath,
             "label": float(row.abs_focus),
             "fov": float(row.FOV),
-            "pattern": int(row.pattern)
+            "pattern": int(row.pattern),
+            "source": row.source
         }
         for row in train_df.itertuples()
     ]
@@ -640,7 +659,7 @@ def main():
     # GroupKFold CV (patternでグループ化してリーク防止)
     groups = [d['pattern'] for d in all_data]
     n_patterns = len(set(groups))
-    n_folds = min(config.n_folds, n_patterns)  # パターン数以下のfold数に調整
+    n_folds = min(config.n_folds, n_patterns)
     gkfold = GroupKFold(n_splits=n_folds)
     oof_preds = np.zeros(len(all_data))
     cv_scores = []
@@ -652,7 +671,8 @@ def main():
         t_data = [all_data[i] for i in t_idx]
         v_data = [all_data[i] for i in v_idx]
         val_patterns = sorted(set([all_data[i]['pattern'] for i in v_idx]))
-        print(f"\nFold {fold+1}: Val patterns = {val_patterns}")
+        val_sources = set([all_data[i]['source'] for i in v_idx])
+        print(f"\nFold {fold+1}: Val patterns = {val_patterns}, sources = {val_sources}")
         snapshot_paths, best_rmse, oof_pred = train_fold(config, t_data, v_data, fold + 1)
         cv_scores.append(best_rmse)
         oof_preds[v_idx] = oof_pred
@@ -670,7 +690,7 @@ def main():
     # OOF保存
     train_df["oof"] = oof_preds
     oof_path = OUTPUT_DIR / f"oof_{config.exp_name}.csv"
-    train_df[["id", "oof"]].to_csv(oof_path, index=False)
+    train_df[["id", "oof", "source"]].to_csv(oof_path, index=False)
     print(f"OOF saved: {oof_path}")
 
     # テスト推論
@@ -766,10 +786,10 @@ def debug_inference_speed():
     config = Config()
     set_seed(config.seed)
 
-    # テストデータ読み込み
-    test_df = pd.read_csv(DATA_DIR / "test.csv")
+    # テストデータ読み込み（v5）
+    test_df = pd.read_csv(DATA_DIR_V5 / "test.csv")
     test_df["filepath"] = test_df["filepath"].apply(
-        lambda x: str(DATA_DIR / x.lstrip("./"))
+        lambda x: str(DATA_DIR_V5 / x.lstrip("./"))
     )
     print(f"Test data: {len(test_df)} images")
 
