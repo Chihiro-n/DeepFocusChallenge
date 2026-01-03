@@ -30,7 +30,7 @@ import matplotlib.pyplot as plt
 # パス設定
 # ============================================
 DATA_DIR = Path("input/DeepFocusChallenge_v5")
-OUTPUT_DIR = Path("EXP/EXP003/outputs")
+OUTPUT_DIR = Path("EXP/EXP003/outputs_v5")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -356,7 +356,7 @@ def main():
         'id': test_features['id'],
         'abs_focus': y_pred_test
     })
-    submission_path = OUTPUT_DIR / "submission.csv"
+    submission_path = OUTPUT_DIR / "submission_v5.csv"
     submission.to_csv(submission_path, index=False)
 
     print(f"\n{'=' * 60}")
