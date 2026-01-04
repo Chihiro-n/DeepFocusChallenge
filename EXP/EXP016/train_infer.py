@@ -423,7 +423,7 @@ def predict_test(model, processor, test_df: pd.DataFrame, config: Config):
     model.eval()
     loader = DataLoader(
         TestDataset(test_df, config),
-        batch_size=config.batch_size * 4,  # 大きめバッチ
+        batch_size=config.batch_size,  # 学習時と同じバッチサイズ
         shuffle=False,
         num_workers=0,  # Windows互換性のため0に設定
         collate_fn=CollateFn(processor, config.prompt)
