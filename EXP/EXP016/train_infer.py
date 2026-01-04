@@ -463,7 +463,11 @@ def predict_test(model, processor, test_df: pd.DataFrame, config: Config):
 # 学習
 # ============================================
 
-def train_fold(config, train_data, val_data, fold):
+def train_fold(config, train_data, val_data, fold, test_df=None):
+    """
+    学習を実行し、OOF予測とTest予測を返す
+    test_df: テスト推論も同時に行う場合に指定
+    """
     print(f"\n{'='*20} Fold {fold} Start {'='*20}")
     set_seed(config.seed)
 
@@ -566,6 +570,12 @@ def train_fold(config, train_data, val_data, fold):
 
     _, oof_pred, _ = evaluate_simple(model, processor, val_data, config)
 
+    # Test推論（モデルがメモリ上にある間に実行 - 高速）
+    test_pred = None
+    if test_df is not None:
+        print(f"Running test inference for Fold {fold} (in-memory, fast)...")
+        test_pred = predict_test(model, processor, test_df, config)
+
     # Snapshot整理
     final_paths = []
     print(f"\nFinalizing Fold {fold} snapshots...")
@@ -583,7 +593,7 @@ def train_fold(config, train_data, val_data, fold):
     del model
     torch.cuda.empty_cache()
 
-    return final_paths, best_rmse, oof_pred
+    return final_paths, best_rmse, oof_pred, test_pred
 
 
 # ============================================
@@ -673,14 +683,22 @@ def main():
     print(f"\nStarting {n_folds}-Fold GroupKFold CV (grouped by pattern)...")
     print(f"Number of patterns: {n_patterns}")
 
+    # Test推論結果を格納
+    test_results = []
+
     for fold, (t_idx, v_idx) in enumerate(gkfold.split(range(len(all_data)), groups=groups)):
         t_data = [all_data[i] for i in t_idx]
         v_data = [all_data[i] for i in v_idx]
         val_patterns = sorted(set([all_data[i]['pattern'] for i in v_idx]))
         print(f"\nFold {fold+1}: Val patterns = {val_patterns}")
-        snapshot_paths, best_rmse, oof_pred = train_fold(config, t_data, v_data, fold + 1)
+        # test_dfを渡してTrain中にTest推論も実行（高速）
+        snapshot_paths, best_rmse, oof_pred, test_pred = train_fold(
+            config, t_data, v_data, fold + 1, test_df=test_df
+        )
         cv_scores.append(best_rmse)
         oof_preds[v_idx] = oof_pred
+        if test_pred is not None:
+            test_results.append(test_pred)
 
     # CVサマリー
     labels = np.array([d['label'] for d in all_data])
@@ -698,72 +716,8 @@ def main():
     train_df[["id", "oof"]].to_csv(oof_path, index=False)
     print(f"OOF saved: {oof_path}")
 
-    # テスト推論
-    print(f"\n{'='*20} Test Inference Start {'='*20}")
-    test_results = []
-
-    # ベースモデルを1回だけロード（量子化は1回のみ）
-    print("Loading base model (one-time quantization)...")
-    from safetensors.torch import load_file
-    base_model = Qwen3VLForConditionalGeneration.from_pretrained(
-        config.model_name,
-        quantization_config=get_bnb_config(),
-        device_map="auto",
-        trust_remote_code=True
-    )
-    processor = AutoProcessor.from_pretrained(config.model_name, trust_remote_code=True)
-    if processor.tokenizer.pad_token is None:
-        processor.tokenizer.pad_token = processor.tokenizer.eos_token
-
-    # 学習時と同じ前処理を適用（速度向上のため）
-    base_model = prepare_model_for_kbit_training(base_model)
-
-    # 最初のsnapshotでLoRAを適用してモデル構築
-    first_path = None
-    for fold in range(1, n_folds + 1):
-        fdir = MODEL_DIR / f"fold_{fold}"
-        for name in ["snapshot_best", "snapshot_2nd_best"]:
-            path = fdir / name
-            if path.exists():
-                first_path = str(path)
-                break
-        if first_path:
-            break
-
-    base_model = PeftModel.from_pretrained(base_model, first_path)
-    cls_state = torch.load(os.path.join(first_path, "classifier_head.pt"), map_location=config.device)
-    model = Qwen3VLClassifier(base_model, base_model.config.text_config.hidden_size, cls_state["dropout"])
-    model.classifier.load_state_dict(cls_state["classifier"])
-    model = model.to(config.device, dtype=torch.bfloat16)
-
-    # 各foldのbest snapshotで推論
-    for fold in range(1, n_folds + 1):
-        fdir = MODEL_DIR / f"fold_{fold}"
-        path = fdir / "snapshot_best"
-        if not path.exists():
-            continue
-        print(f"Swapping adapter: {path}...")
-
-        # LoRAアダプターのweightsをロード
-        adapter_path = os.path.join(str(path), "adapter_model.safetensors")
-        if os.path.exists(adapter_path):
-            lora_state = load_file(adapter_path)
-        else:
-            lora_state = torch.load(os.path.join(str(path), "adapter_model.bin"), map_location=config.device)
-        model.base_model.load_state_dict(lora_state, strict=False)
-
-        # Classifier headのweightsをロード
-        cls_state = torch.load(os.path.join(str(path), "classifier_head.pt"), map_location=config.device)
-        model.classifier.load_state_dict(cls_state["classifier"])
-
-        # DataLoaderを使った高速推論
-        preds = predict_test(model, processor, test_df, config)
-        test_results.append(preds)
-
-    del model
-    torch.cuda.empty_cache()
-
-    # 提出ファイル作成
+    # 提出ファイル作成（Test推論は各Fold学習中に実行済み）
+    print(f"\n{'='*20} Creating Submission {'='*20}")
     test_df["abs_focus"] = np.mean(test_results, axis=0)
     submission_path = OUTPUT_DIR / "submission.csv"
     test_df[["id", "abs_focus"]].to_csv(submission_path, index=False)
@@ -819,11 +773,11 @@ def debug_inference_speed():
         return
 
     print(f"\nLoading model from: {model_path}")
-    print("Options: gradient_checkpointing disabled")
+    print("Options: gradient_checkpointing disabled + torch.compile()")
 
     # モデルロード時間計測
     t0 = time.time()
-    model, processor = load_trained_model(model_path, config, use_compile=False)
+    model, processor = load_trained_model(model_path, config, use_compile=True)
     t_load = time.time() - t0
     print(f"Model load time: {t_load:.2f}s")
 
