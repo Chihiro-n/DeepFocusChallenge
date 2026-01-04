@@ -408,6 +408,16 @@ def evaluate_with_tta(model, processor, val_data: list, config: Config):
     return rmse, final_preds, all_labels
 
 
+class CollateFn:
+    """pickle可能なcollate関数（Windows対応）"""
+    def __init__(self, processor, prompt):
+        self.processor = processor
+        self.prompt = prompt
+
+    def __call__(self, batch):
+        return collate_fn(batch, self.processor, self.prompt)
+
+
 def predict_test(model, processor, test_df: pd.DataFrame, config: Config):
     """テスト推論（DataLoader使用で高速化）"""
     model.eval()
@@ -415,8 +425,8 @@ def predict_test(model, processor, test_df: pd.DataFrame, config: Config):
         TestDataset(test_df, config),
         batch_size=config.batch_size * 4,  # 大きめバッチ
         shuffle=False,
-        num_workers=2,  # 並列読み込み
-        collate_fn=lambda x: collate_fn(x, processor, config.prompt)
+        num_workers=0,  # Windows互換性のため0に設定
+        collate_fn=CollateFn(processor, config.prompt)
     )
     all_preds = []
 
