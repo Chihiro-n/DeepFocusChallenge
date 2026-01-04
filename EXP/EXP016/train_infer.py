@@ -840,9 +840,119 @@ def debug_inference_speed():
     torch.cuda.empty_cache()
 
 
+def infer_only(model_dir: str):
+    """推論のみ実行（学習済みweights使用）"""
+    from safetensors.torch import load_file
+
+    print("=" * 60)
+    print("EXP016: Inference Only Mode")
+    print("=" * 60)
+
+    config = Config()
+    set_seed(config.seed)
+    model_dir = Path(model_dir)
+
+    # テストデータ読み込み
+    print(f"\nData directory: {DATA_DIR}")
+    test_df = pd.read_csv(DATA_DIR / "test.csv")
+    test_df["filepath"] = test_df["filepath"].apply(
+        lambda x: str(DATA_DIR / x.lstrip("./"))
+    )
+    print(f"Test: {len(test_df)} images")
+    print(f"Model directory: {model_dir}")
+
+    # snapshotを探す
+    snapshot_paths = []
+    for fold in range(1, 6):
+        fdir = model_dir / f"fold_{fold}"
+        for name in ["snapshot_best", "snapshot_2nd_best"]:
+            path = fdir / name
+            if path.exists():
+                snapshot_paths.append(str(path))
+
+    if not snapshot_paths:
+        print(f"ERROR: No snapshots found in {model_dir}")
+        return
+
+    print(f"Found {len(snapshot_paths)} snapshots")
+
+    # ベースモデルを1回だけロード
+    print("\nLoading base model (one-time quantization)...")
+    base_model = Qwen3VLForConditionalGeneration.from_pretrained(
+        config.model_name,
+        quantization_config=get_bnb_config(),
+        device_map="auto",
+        trust_remote_code=True
+    )
+    processor = AutoProcessor.from_pretrained(config.model_name, trust_remote_code=True)
+    if processor.tokenizer.pad_token is None:
+        processor.tokenizer.pad_token = processor.tokenizer.eos_token
+
+    # 最初のsnapshotでLoRAを適用
+    first_path = snapshot_paths[0]
+    base_model = PeftModel.from_pretrained(base_model, first_path)
+    cls_state = torch.load(os.path.join(first_path, "classifier_head.pt"), map_location=config.device)
+    model = Qwen3VLClassifier(base_model, base_model.config.text_config.hidden_size, cls_state["dropout"])
+    model.classifier.load_state_dict(cls_state["classifier"])
+    model = model.to(config.device, dtype=torch.bfloat16)
+
+    # 各snapshotで推論
+    test_results = []
+    for path in snapshot_paths:
+        print(f"Swapping adapter: {path}...")
+
+        # LoRAアダプターのweightsをロード
+        adapter_path = os.path.join(path, "adapter_model.safetensors")
+        if os.path.exists(adapter_path):
+            lora_state = load_file(adapter_path)
+        else:
+            lora_state = torch.load(os.path.join(path, "adapter_model.bin"), map_location=config.device)
+        model.base_model.load_state_dict(lora_state, strict=False)
+
+        # Classifier headのweightsをロード
+        cls_state = torch.load(os.path.join(path, "classifier_head.pt"), map_location=config.device)
+        model.classifier.load_state_dict(cls_state["classifier"])
+
+        # 推論
+        preds = predict_test(model, processor, test_df, config)
+        test_results.append(preds)
+
+    del model
+    torch.cuda.empty_cache()
+
+    # 提出ファイル作成
+    test_df["abs_focus"] = np.mean(test_results, axis=0)
+    submission_path = OUTPUT_DIR / "submission.csv"
+    test_df[["id", "abs_focus"]].to_csv(submission_path, index=False)
+
+    print(f"\n{'='*60}")
+    print(f"Submission saved: {submission_path}")
+    print(f"{'='*60}")
+
+    # 予測統計
+    print(f"\nPrediction statistics:")
+    print(f"  Mean: {test_df['abs_focus'].mean():.2f}")
+    print(f"  Std:  {test_df['abs_focus'].std():.2f}")
+    print(f"  Min:  {test_df['abs_focus'].min():.2f}")
+    print(f"  Max:  {test_df['abs_focus'].max():.2f}")
+
+    print("\nInference completed!")
+
+
 if __name__ == '__main__':
     import sys
-    if len(sys.argv) > 1 and sys.argv[1] == '--debug':
+    import argparse
+
+    parser = argparse.ArgumentParser(description='EXP016: Qwen3-VL LoRA Fine-tuning')
+    parser.add_argument('--debug', action='store_true', help='Run inference speed test')
+    parser.add_argument('--infer', action='store_true', help='Inference only mode')
+    parser.add_argument('--model-dir', type=str, default=str(MODEL_DIR),
+                        help='Model directory path (default: EXP/EXP016/outputs_v5/models)')
+    args = parser.parse_args()
+
+    if args.debug:
         debug_inference_speed()
+    elif args.infer:
+        infer_only(args.model_dir)
     else:
         main()
