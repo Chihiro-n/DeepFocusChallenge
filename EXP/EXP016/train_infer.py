@@ -718,30 +718,29 @@ def main():
     model.classifier.load_state_dict(cls_state["classifier"])
     model = model.to(config.device, dtype=torch.bfloat16)
 
-    # 各snapshotでLoRAアダプターのweightsだけ差し替えて推論
+    # 各foldのbest snapshotで推論
     for fold in range(1, n_folds + 1):
         fdir = MODEL_DIR / f"fold_{fold}"
-        for name in ["snapshot_best", "snapshot_2nd_best"]:
-            path = fdir / name
-            if not path.exists():
-                continue
-            print(f"Swapping adapter: {path}...")
+        path = fdir / "snapshot_best"
+        if not path.exists():
+            continue
+        print(f"Swapping adapter: {path}...")
 
-            # LoRAアダプターのweightsをロード
-            adapter_path = os.path.join(str(path), "adapter_model.safetensors")
-            if os.path.exists(adapter_path):
-                lora_state = load_file(adapter_path)
-            else:
-                lora_state = torch.load(os.path.join(str(path), "adapter_model.bin"), map_location=config.device)
-            model.base_model.load_state_dict(lora_state, strict=False)
+        # LoRAアダプターのweightsをロード
+        adapter_path = os.path.join(str(path), "adapter_model.safetensors")
+        if os.path.exists(adapter_path):
+            lora_state = load_file(adapter_path)
+        else:
+            lora_state = torch.load(os.path.join(str(path), "adapter_model.bin"), map_location=config.device)
+        model.base_model.load_state_dict(lora_state, strict=False)
 
-            # Classifier headのweightsをロード
-            cls_state = torch.load(os.path.join(str(path), "classifier_head.pt"), map_location=config.device)
-            model.classifier.load_state_dict(cls_state["classifier"])
+        # Classifier headのweightsをロード
+        cls_state = torch.load(os.path.join(str(path), "classifier_head.pt"), map_location=config.device)
+        model.classifier.load_state_dict(cls_state["classifier"])
 
-            # DataLoaderを使った高速推論
-            preds = predict_test(model, processor, test_df, config)
-            test_results.append(preds)
+        # DataLoaderを使った高速推論
+        preds = predict_test(model, processor, test_df, config)
+        test_results.append(preds)
 
     del model
     torch.cuda.empty_cache()
@@ -861,14 +860,13 @@ def infer_only(model_dir: str):
     print(f"Test: {len(test_df)} images")
     print(f"Model directory: {model_dir}")
 
-    # snapshotを探す
+    # snapshotを探す（bestのみ使用）
     snapshot_paths = []
     for fold in range(1, 6):
         fdir = model_dir / f"fold_{fold}"
-        for name in ["snapshot_best", "snapshot_2nd_best"]:
-            path = fdir / name
-            if path.exists():
-                snapshot_paths.append(str(path))
+        path = fdir / "snapshot_best"
+        if path.exists():
+            snapshot_paths.append(str(path))
 
     if not snapshot_paths:
         print(f"ERROR: No snapshots found in {model_dir}")
