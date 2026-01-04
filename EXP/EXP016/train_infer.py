@@ -326,18 +326,22 @@ class SimpleValDataset(Dataset):
 class TestDataset(Dataset):
     """テスト推論用データセット"""
     def __init__(self, df: pd.DataFrame, config: Config):
-        self.df = df
+        # DataFrameをリストに変換（高速化）
+        self.data = [
+            {"filepath": row.filepath, "fov": row.FOV}
+            for row in df.itertuples()
+        ]
         self.config = config
         self.val_trans = get_val_transforms(config.crop_size)
 
     def __len__(self):
-        return len(self.df)
+        return len(self.data)
 
     def __getitem__(self, idx):
-        row = self.df.iloc[idx]
-        image = Image.open(row.filepath).convert("RGB")
+        item = self.data[idx]
+        image = Image.open(item["filepath"]).convert("RGB")
         image = apply_fov_and_crop(
-            image, row.FOV, self.val_trans, self.config.max_image_size
+            image, item["fov"], self.val_trans, self.config.max_image_size
         )
         return {
             "image": image,
