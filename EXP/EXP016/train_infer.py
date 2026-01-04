@@ -287,6 +287,8 @@ def load_trained_model(path, config):
     if proc.tokenizer.pad_token is None:
         proc.tokenizer.pad_token = proc.tokenizer.eos_token
 
+    # 学習時と同じ前処理を適用（速度向上のため）
+    base = prepare_model_for_kbit_training(base)
     base = PeftModel.from_pretrained(base, path)
     st = torch.load(os.path.join(path, "classifier_head.pt"), map_location=config.device)
     model = Qwen3VLClassifier(base, base.config.text_config.hidden_size, st["dropout"])
@@ -701,6 +703,9 @@ def main():
     if processor.tokenizer.pad_token is None:
         processor.tokenizer.pad_token = processor.tokenizer.eos_token
 
+    # 学習時と同じ前処理を適用（速度向上のため）
+    base_model = prepare_model_for_kbit_training(base_model)
+
     # 最初のsnapshotでLoRAを適用してモデル構築
     first_path = None
     for fold in range(1, n_folds + 1):
@@ -886,6 +891,9 @@ def infer_only(model_dir: str):
     processor = AutoProcessor.from_pretrained(config.model_name, trust_remote_code=True)
     if processor.tokenizer.pad_token is None:
         processor.tokenizer.pad_token = processor.tokenizer.eos_token
+
+    # 学習時と同じ前処理を適用（速度向上のため）
+    base_model = prepare_model_for_kbit_training(base_model)
 
     # 最初のsnapshotでLoRAを適用
     first_path = snapshot_paths[0]
