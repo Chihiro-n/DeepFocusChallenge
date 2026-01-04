@@ -420,7 +420,8 @@ class CollateFn:
 
 def predict_test(model, processor, test_df: pd.DataFrame, config: Config):
     """テスト推論（DataLoader使用で高速化）"""
-    model.eval()
+    # Note: eval()ではなくtrain()を使用（速度検証用）
+    model.train()
     loader = DataLoader(
         TestDataset(test_df, config),
         batch_size=config.batch_size,  # 学習時と同じバッチサイズ
@@ -430,7 +431,7 @@ def predict_test(model, processor, test_df: pd.DataFrame, config: Config):
     )
     all_preds = []
 
-    with torch.no_grad():
+    with torch.inference_mode():
         for batch in tqdm(loader, desc="Predicting"):
             batch = {
                 k: v.to(config.device) if isinstance(v, torch.Tensor) else v
