@@ -275,25 +275,35 @@ def collate_fn(batch, processor, prompt):
     return inputs
 
 
-def load_trained_model(path, config):
+def load_trained_model(path, config, use_compile=False):
     """学習済みモデルをロード"""
     base = Qwen3VLForConditionalGeneration.from_pretrained(
         config.model_name,
         quantization_config=get_bnb_config(),
         device_map="auto",
-        trust_remote_code=True
+        trust_remote_code=True,
+        attn_implementation="flash_attention_2" if torch.cuda.is_available() else None,  # Flash Attention
     )
     proc = AutoProcessor.from_pretrained(config.model_name, trust_remote_code=True)
     if proc.tokenizer.pad_token is None:
         proc.tokenizer.pad_token = proc.tokenizer.eos_token
 
-    # 学習時と同じ前処理を適用（速度向上のため）
-    base = prepare_model_for_kbit_training(base)
+    # 推論時はgradient checkpointingを無効化（速度向上）
+    if hasattr(base, 'gradient_checkpointing_disable'):
+        base.gradient_checkpointing_disable()
+
     base = PeftModel.from_pretrained(base, path)
     st = torch.load(os.path.join(path, "classifier_head.pt"), map_location=config.device)
     model = Qwen3VLClassifier(base, base.config.text_config.hidden_size, st["dropout"])
     model.classifier.load_state_dict(st["classifier"])
-    return model.to(config.device, dtype=torch.bfloat16), proc
+    model = model.to(config.device, dtype=torch.bfloat16)
+
+    # torch.compile()で高速化（オプション）
+    if use_compile:
+        print("Compiling model with torch.compile()...")
+        model = torch.compile(model, mode="reduce-overhead")
+
+    return model, proc
 
 
 # ============================================
@@ -426,8 +436,7 @@ class CollateFn:
 
 def predict_test(model, processor, test_df: pd.DataFrame, config: Config):
     """テスト推論（DataLoader使用で高速化）"""
-    # Note: eval()ではなくtrain()を使用（速度検証用）
-    model.train()
+    model.eval()
     loader = DataLoader(
         TestDataset(test_df, config),
         batch_size=config.batch_size,  # 学習時と同じバッチサイズ
@@ -811,17 +820,19 @@ def debug_inference_speed():
         return
 
     print(f"\nLoading model from: {model_path}")
+    print("Options: Flash Attention + gradient_checkpointing disabled")
 
     # モデルロード時間計測
     t0 = time.time()
-    model, processor = load_trained_model(model_path, config)
+    model, processor = load_trained_model(model_path, config, use_compile=False)
     t_load = time.time() - t0
     print(f"Model load time: {t_load:.2f}s")
 
     # ウォームアップ（最初の推論は遅い）
-    print("\nWarmup run...")
-    warmup_df = test_df_small.head(5).copy()
-    _ = predict_test(model, processor, warmup_df, config)
+    print("\nWarmup run (3 batches)...")
+    for _ in range(3):
+        warmup_df = test_df_small.head(3).copy()
+        _ = predict_test(model, processor, warmup_df, config)
 
     # 推論速度計測
     print(f"\nRunning inference on {n_test} images...")
