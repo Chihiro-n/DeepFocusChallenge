@@ -282,7 +282,6 @@ def load_trained_model(path, config, use_compile=False):
         quantization_config=get_bnb_config(),
         device_map="auto",
         trust_remote_code=True,
-        attn_implementation="flash_attention_2" if torch.cuda.is_available() else None,  # Flash Attention
     )
     proc = AutoProcessor.from_pretrained(config.model_name, trust_remote_code=True)
     if proc.tokenizer.pad_token is None:
@@ -820,7 +819,7 @@ def debug_inference_speed():
         return
 
     print(f"\nLoading model from: {model_path}")
-    print("Options: Flash Attention + gradient_checkpointing disabled")
+    print("Options: gradient_checkpointing disabled")
 
     # モデルロード時間計測
     t0 = time.time()
